@@ -3,6 +3,7 @@ import streamlit as st
 import asyncio
 from dotenv import load_dotenv
 import threading
+import queue
 
 # Import the backend logic and the UI drawing function
 from live import GeminiLive
@@ -31,6 +32,9 @@ if 'event_loop' not in st.session_state:
 if 'response_thread' not in st.session_state:
     st.session_state.response_thread = None
 
+if 'transcript_queue' not in st.session_state:
+    st.session_state.transcript_queue = queue.Queue()
+
 # --- Helper Functions for Async Operations ---
 
 def run_async_in_thread(coro):
@@ -42,10 +46,14 @@ def run_async_in_thread(coro):
     finally:
         loop.close()
 
-def start_response_listener(callback):
+def start_response_listener(gemini_live_instance, transcript_queue):
     """Start listening for responses in a background thread."""
+    def ui_update_callback(event_type, data):
+        """Thread-safe callback that uses a queue instead of session_state."""
+        transcript_queue.put((event_type, data))
+    
     def listener_thread():
-        run_async_in_thread(st.session_state.gemini_live.receive_responses(callback))
+        run_async_in_thread(gemini_live_instance.receive_responses(ui_update_callback))
     
     thread = threading.Thread(target=listener_thread, daemon=True)
     thread.start()
@@ -56,16 +64,20 @@ def start_response_listener(callback):
 
 def start_session_callback():
     """Called when the 'Start Session' button is clicked."""
+    # Get references before starting thread
+    gemini_live = st.session_state.gemini_live
+    transcript_queue = st.session_state.transcript_queue
+    
     # Run the async start_session method in a thread
     threading.Thread(
         target=run_async_in_thread,
-        args=(st.session_state.gemini_live.start_session(),),
+        args=(gemini_live.start_session(),),
         daemon=True
     ).start()
     
-    # Start the response listener thread
+    # Start the response listener thread with queue for thread-safe communication
     if st.session_state.response_thread is None or not st.session_state.response_thread.is_alive():
-        st.session_state.response_thread = start_response_listener(ui_update_callback)
+        st.session_state.response_thread = start_response_listener(gemini_live, transcript_queue)
 
 def stop_session_callback():
     """Called when the 'Stop Session' button is clicked."""
@@ -73,27 +85,33 @@ def stop_session_callback():
     # Clear the transcript when the session stops
     st.session_state.transcript = []
     st.session_state.response_thread = None
-
-def ui_update_callback(event_type, data):
-    """
-    This function is passed to the backend to allow it to update the UI's state.
-    """
-    if event_type == "error":
-        st.error(data)
-    elif event_type == "text":
-        st.session_state.transcript.append(f"**🤖 Gemini:** {data}")
-    elif event_type == "tool":
-        st.session_state.transcript.append(f"*{data}*")
-    
-    # Trigger a UI refresh to show the new transcript entry
-    if 'rerun_needed' not in st.session_state:
-        st.session_state.rerun_needed = True
+    # Clear the queue
+    while not st.session_state.transcript_queue.empty():
+        try:
+            st.session_state.transcript_queue.get_nowait()
+        except queue.Empty:
+            break
 
 # --- Main Application Execution ---
 
-# Check if a rerun is needed from a background callback
-if st.session_state.get('rerun_needed', False):
-    st.session_state.rerun_needed = False
+# Process any messages from the background thread
+messages_processed = False
+while not st.session_state.transcript_queue.empty():
+    try:
+        event_type, data = st.session_state.transcript_queue.get_nowait()
+        if event_type == "error":
+            st.error(data)
+        elif event_type == "text":
+            st.session_state.transcript.append(f"**🤖 Gemini:** {data}")
+            messages_processed = True
+        elif event_type == "tool":
+            st.session_state.transcript.append(f"*{data}*")
+            messages_processed = True
+    except queue.Empty:
+        break
+
+# If we processed messages, trigger a rerun to show them
+if messages_processed:
     st.rerun()
 
 # Draw the user interface, passing in the necessary functions and state
