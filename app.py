@@ -46,19 +46,6 @@ def run_async_in_thread(coro):
     finally:
         loop.close()
 
-def start_response_listener(gemini_live_instance, transcript_queue):
-    """Start listening for responses in a background thread."""
-    def ui_update_callback(event_type, data):
-        """Thread-safe callback that uses a queue instead of session_state."""
-        transcript_queue.put((event_type, data))
-    
-    def listener_thread():
-        run_async_in_thread(gemini_live_instance.receive_responses(ui_update_callback))
-    
-    thread = threading.Thread(target=listener_thread, daemon=True)
-    thread.start()
-    return thread
-
 # --- Callback Functions ---
 # These functions are the "glue" between the UI and the backend.
 
@@ -68,16 +55,26 @@ def start_session_callback():
     gemini_live = st.session_state.gemini_live
     transcript_queue = st.session_state.transcript_queue
     
-    # Run the async start_session method in a thread
-    threading.Thread(
-        target=run_async_in_thread,
-        args=(gemini_live.start_session(),),
-        daemon=True
-    ).start()
+    def session_starter():
+        """Start session and then start listener."""
+        try:
+            # First, connect to Gemini
+            run_async_in_thread(gemini_live.start_session())
+            # Then start listening for responses
+            run_async_in_thread(gemini_live.receive_responses(
+                lambda event_type, data: transcript_queue.put((event_type, data))
+            ))
+        except Exception as e:
+            print(f"Error in session startup: {e}")
+            transcript_queue.put(("error", f"Failed to start session: {e}"))
     
-    # Start the response listener thread with queue for thread-safe communication
+    # Run the entire startup sequence in a single thread
     if st.session_state.response_thread is None or not st.session_state.response_thread.is_alive():
-        st.session_state.response_thread = start_response_listener(gemini_live, transcript_queue)
+        st.session_state.response_thread = threading.Thread(
+            target=session_starter,
+            daemon=True
+        )
+        st.session_state.response_thread.start()
 
 def stop_session_callback():
     """Called when the 'Stop Session' button is clicked."""

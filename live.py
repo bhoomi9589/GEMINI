@@ -77,14 +77,31 @@ class GeminiLive:
             except:
                 pass
 
-    async def send_audio_frame(self, frame: av.AudioFrame):
-        """Processes and sends an audio frame from WebRTC to Gemini."""
+    def send_audio_frame(self, frame: av.AudioFrame):
+        """Processes and sends an audio frame from WebRTC to Gemini (synchronous wrapper)."""
         if not self.running or not self.session:
             return
+        
+        # Create async task to send audio
         audio_data = frame.to_ndarray().tobytes()
+        audio_b64 = base64.b64encode(audio_data).decode('utf-8')
+        
+        # Schedule the async send operation
         try:
-            # Encode audio to base64 for the new SDK
-            audio_b64 = base64.b64encode(audio_data).decode('utf-8')
+            loop = asyncio.get_event_loop()
+            if loop.is_running():
+                asyncio.create_task(self._send_audio_async(audio_b64))
+            else:
+                # Fallback: run in the event loop
+                loop.run_until_complete(self._send_audio_async(audio_b64))
+        except Exception as e:
+            print(f"Error scheduling audio send: {e}")
+    
+    async def _send_audio_async(self, audio_b64):
+        """Internal async method to send audio."""
+        if not self.running or not self.session:
+            return
+        try:
             await self.session.send(
                 {"data": audio_b64, "mime_type": "audio/pcm"},
                 end_of_turn=False
@@ -92,20 +109,36 @@ class GeminiLive:
         except Exception as e:
             print(f"Error sending audio: {e}")
 
-    async def send_video_frame(self, frame: av.VideoFrame):
-        """Processes and sends a video frame from WebRTC to Gemini."""
+    def send_video_frame(self, frame: av.VideoFrame):
+        """Processes and sends a video frame from WebRTC to Gemini (synchronous wrapper)."""
         if not self.running or not self.session:
             return
 
+        # Convert frame to image
         img = frame.to_image()
         image_io = io.BytesIO()
         img.save(image_io, format="jpeg")
         image_io.seek(0)
         
         image_data = image_io.getvalue()
+        image_b64 = base64.b64encode(image_data).decode('utf-8')
+        
+        # Schedule the async send operation
         try:
-            # Encode image to base64 for the new SDK
-            image_b64 = base64.b64encode(image_data).decode('utf-8')
+            loop = asyncio.get_event_loop()
+            if loop.is_running():
+                asyncio.create_task(self._send_video_async(image_b64))
+            else:
+                # Fallback: run in the event loop
+                loop.run_until_complete(self._send_video_async(image_b64))
+        except Exception as e:
+            print(f"Error scheduling video send: {e}")
+    
+    async def _send_video_async(self, image_b64):
+        """Internal async method to send video."""
+        if not self.running or not self.session:
+            return
+        try:
             await self.session.send(
                 {"data": image_b64, "mime_type": "image/jpeg"},
                 end_of_turn=False
