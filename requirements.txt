@@ -2,6 +2,9 @@
 google-genai
 streamlit
 streamlit-webrtc
+aioice
+aiortc
 av
 pillow
 python-dotenv
+opencv-python-headless
