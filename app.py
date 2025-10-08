@@ -3,6 +3,7 @@ import threading
 import asyncio
 from queue import Queue
 import time
+import uuid
 
 from live import GeminiLive
 from streamlit_webrtc import webrtc_streamer, WebRtcMode
@@ -38,15 +39,24 @@ def start_gemini_session_and_listener(gemini_live_instance):
     return thread
 
 def main():
+    st.set_page_config(
+        page_title="Gemini 2.0 Live",
+        page_icon="🎥",
+        layout="wide",
+        initial_sidebar_state="collapsed"
+    )
+    
     st.title("🎥 Gemini 2.0 Live - Voice & Video Chat")
     
-    # ✅ Initialize ALL session state variables FIRST
+    # ✅ Initialize session state with a stable UUID-based key
+    if "component_key" not in st.session_state:
+        st.session_state.component_key = str(uuid.uuid4())
+    
     if "gemini_live" not in st.session_state:
         st.session_state.gemini_live = GeminiLive()
         st.session_state.transcript = []
         st.session_state.session_active = False
-        st.session_state.webrtc_ready = False  # Track when WebRTC is truly ready
-        st.session_state.init_timestamp = time.time()  # Add timestamp to force fresh component
+        st.session_state.webrtc_started = False
     
     # Process any queued transcript updates
     while not transcript_queue.empty():
@@ -61,91 +71,106 @@ def main():
     col1, col2 = st.columns([2, 1])
     
     with col1:
-        # ✅ Use timestamp-based unique key to prevent registration issues
-        webrtc_key = f"gemini-live-{st.session_state.init_timestamp}"
+        st.subheader("📹 Video & Audio")
         
-        try:
-            webrtc_ctx = webrtc_streamer(
-                key=webrtc_key,
-                mode=WebRtcMode.SENDRECV,
-                rtc_configuration={"iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}]},
-                media_stream_constraints={
-                    "video": {"width": {"ideal": 640}, "height": {"ideal": 480}},
-                    "audio": True
+        # ✅ Use stable UUID-based key that persists across reruns
+        webrtc_ctx = webrtc_streamer(
+            key=st.session_state.component_key,
+            mode=WebRtcMode.SENDRECV,
+            rtc_configuration={
+                "iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}]
+            },
+            media_stream_constraints={
+                "video": {
+                    "width": {"ideal": 640},
+                    "height": {"ideal": 480},
+                    "frameRate": {"ideal": 30, "max": 30}
                 },
-                video_frame_callback=st.session_state.gemini_live.send_video_frame,
-                audio_frame_callback=st.session_state.gemini_live.send_audio_frame,
-                async_processing=False,
-                sendback_audio=False,
-            )
-            
-            # ✅ Mark as ready after component renders
-            if webrtc_ctx:
-                st.session_state.webrtc_ready = True
-                
-                # Show WebRTC status
-                if webrtc_ctx.state.playing:
-                    st.success("🟢 Camera & Microphone Active")
-                else:
-                    st.info("⚪ Click START to begin")
-            else:
-                st.warning("⚠️ Initializing WebRTC...")
-                
-        except Exception as e:
-            st.error(f"WebRTC Error: {e}")
-            st.session_state.webrtc_ready = False
+                "audio": {
+                    "echoCancellation": True,
+                    "noiseSuppression": True,
+                    "autoGainControl": True,
+                }
+            },
+            video_frame_callback=st.session_state.gemini_live.send_video_frame,
+            audio_frame_callback=st.session_state.gemini_live.send_audio_frame,
+            async_processing=False,
+        )
+        
+        # Show status
+        if webrtc_ctx and webrtc_ctx.state.playing:
+            st.success("🟢 Camera & Microphone Active")
+            st.session_state.webrtc_started = True
+        elif webrtc_ctx:
+            st.info("⚪ Click START above to begin")
+        else:
+            st.warning("⚠️ Loading WebRTC component...")
     
     with col2:
         st.subheader("🎛️ Controls")
         
-        # ✅ Only show controls after WebRTC is ready
-        if st.session_state.get("webrtc_ready", False):
-            # Start Session button
-            if st.button("▶️ Start Session", disabled=st.session_state.session_active, key="start_btn"):
-                st.session_state.session_active = True
-                start_gemini_session_and_listener(st.session_state.gemini_live)
-                st.success("Session started!")
-                time.sleep(0.1)  # Small delay to ensure state update
-                st.rerun()
-            
-            # Stop Session button
-            if st.button("⏹️ Stop Session", disabled=not st.session_state.session_active, key="stop_btn"):
-                st.session_state.gemini_live.stop_session()
-                st.session_state.session_active = False
-                st.info("Session stopped!")
-                time.sleep(0.1)  # Small delay to ensure state update
-                st.rerun()
-            
-            # Clear Transcript button
-            if st.button("🗑️ Clear Transcript", key="clear_btn"):
-                st.session_state.transcript = []
-                st.rerun()
-            
-            # ✅ Add status indicator
-            st.divider()
-            if st.session_state.session_active:
-                st.success("🟢 Session Active")
-            else:
-                st.info("⚪ Session Inactive")
+        # Only enable buttons if WebRTC has started at least once
+        can_control = st.session_state.get("webrtc_started", False)
+        
+        if not can_control:
+            st.info("📌 Click START in the video player to enable controls")
+        
+        # Start Session button
+        start_disabled = st.session_state.session_active or not can_control
+        if st.button("▶️ Start Gemini Session", disabled=start_disabled, use_container_width=True):
+            st.session_state.session_active = True
+            start_gemini_session_and_listener(st.session_state.gemini_live)
+            st.success("✅ Session started!")
+            st.rerun()
+        
+        # Stop Session button
+        stop_disabled = not st.session_state.session_active
+        if st.button("⏹️ Stop Gemini Session", disabled=stop_disabled, use_container_width=True):
+            st.session_state.gemini_live.stop_session()
+            st.session_state.session_active = False
+            st.info("⏹️ Session stopped")
+            st.rerun()
+        
+        # Clear Transcript button
+        if st.button("🗑️ Clear Transcript", disabled=not st.session_state.transcript, use_container_width=True):
+            st.session_state.transcript = []
+            st.rerun()
+        
+        # Status indicator
+        st.divider()
+        st.markdown("### Status")
+        
+        if st.session_state.session_active:
+            st.success("🟢 **Gemini Session Active**")
         else:
-            st.info("⏳ Initializing WebRTC component...")
-            # ✅ Auto-refresh until ready
-            if not st.session_state.get("webrtc_ready", False):
-                time.sleep(0.5)
-                st.rerun()
+            st.info("⚪ **Gemini Session Inactive**")
+        
+        if webrtc_ctx and webrtc_ctx.state.playing:
+            st.success("🎥 **WebRTC Streaming**")
+        else:
+            st.info("📹 **WebRTC Waiting**")
     
     # Display transcript
-    st.subheader("📝 Conversation")
+    st.divider()
+    st.subheader("📝 Conversation Transcript")
+    
     if st.session_state.transcript:
-        for message in st.session_state.transcript:
-            role = message["role"]
-            content = message["content"]
-            if role == "assistant":
-                st.chat_message("assistant").write(content)
-            else:
-                st.chat_message("user").write(content)
+        # Create a scrollable container
+        transcript_container = st.container()
+        with transcript_container:
+            for idx, message in enumerate(st.session_state.transcript):
+                role = message["role"]
+                content = message["content"]
+                if role == "assistant":
+                    st.chat_message("assistant").write(content)
+                else:
+                    st.chat_message("user").write(content)
     else:
-        st.info("Start a session and speak to begin the conversation!")
+        st.info("💬 Start a Gemini session and speak to see the conversation here!")
+    
+    # Footer
+    st.divider()
+    st.caption("🚀 Powered by Google Gemini 2.0 Flash Exp | Built with Streamlit")
 
 if __name__ == "__main__":
     main()
