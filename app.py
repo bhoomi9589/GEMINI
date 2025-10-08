@@ -53,12 +53,13 @@ def start_gemini_session_and_listener(gemini_live_instance):
 def main():
     st.title("🎥 Gemini 2.0 Live - Voice & Video Chat")
     
-    # ✅ Initialize session state FIRST, before any WebRTC component
+    # ✅ Initialize ALL session state variables FIRST
     if "gemini_live" not in st.session_state:
         st.session_state.gemini_live = GeminiLive()
         st.session_state.transcript = []
         st.session_state.session_active = False
-        st.session_state.webrtc_initialized = False  # ✅ Track WebRTC initialization
+        st.session_state.webrtc_initialized = False
+        st.session_state.webrtc_playing = False
     
     # Process any queued transcript updates
     while not transcript_queue.empty():
@@ -86,8 +87,7 @@ def main():
                 video_frame_callback=st.session_state.gemini_live.send_video_frame,
                 audio_frame_callback=st.session_state.gemini_live.send_audio_frame,
                 async_processing=False,
-                sendback_audio=False,  # ✅ Don't send audio back (reduces errors)
-                desired_playing_state=st.session_state.get("webrtc_playing", False),  # ✅ Control playing state
+                sendback_audio=False,
             )
             
             # ✅ Mark as initialized after first render
@@ -97,10 +97,8 @@ def main():
             # Show WebRTC status
             if webrtc_ctx and webrtc_ctx.state.playing:
                 st.success("🟢 Camera & Microphone Active")
-                st.session_state.webrtc_playing = True
             else:
                 st.info("⚪ Click START to begin")
-                st.session_state.webrtc_playing = False
         else:
             st.warning("⚠️ Initializing...")
     

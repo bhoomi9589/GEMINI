@@ -37,7 +37,7 @@ class GeminiLive:
         }
         self.session = None
         self.running = False
-        self.event_loop = None  # ✅ Store event loop reference
+        self.event_loop = None
 
     async def start_session(self):
         """Starts a new Gemini LiveConnect session."""
@@ -61,7 +61,6 @@ class GeminiLive:
         """Stops the current Gemini LiveConnect session."""
         print("🛑 Stopping Gemini session...")
         self.running = False
-        # Cleanup happens in receive_responses finally block
 
     def send_audio_frame(self, frame: av.AudioFrame):
         """Processes and sends an audio frame from WebRTC to Gemini (synchronous, thread-safe)."""
@@ -156,15 +155,20 @@ class GeminiLive:
             print(f"❌ Error receiving response: {e}")
             ui_callback("error", f"Connection error: {e}")
         finally:
-            # ✅ Always clean up properly
+            # ✅ Proper cleanup without using __aexit__
             print("🧹 Cleaning up Gemini session...")
             if self.session:
                 try:
-                    await self.session.__aexit__(None, None, None)
+                    # Just close the websocket connection properly
+                    if hasattr(self.session, 'close'):
+                        await self.session.close()
+                    elif hasattr(self.session, 'disconnect'):
+                        await self.session.disconnect()
                     print("✅ Session closed gracefully")
                 except Exception as e:
                     print(f"⚠️ Error during cleanup: {e}")
-                self.session = None
+                finally:
+                    self.session = None
             
             self.running = False
             self.event_loop = None
