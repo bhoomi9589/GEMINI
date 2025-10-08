@@ -2,6 +2,7 @@
 import streamlit as st
 import asyncio
 from dotenv import load_dotenv
+import threading
 
 # Import the backend logic and the UI drawing function
 from live import GeminiLive
@@ -24,19 +25,54 @@ if 'gemini_live' not in st.session_state:
 if 'transcript' not in st.session_state:
     st.session_state.transcript = []
 
+if 'event_loop' not in st.session_state:
+    st.session_state.event_loop = None
+
+if 'response_thread' not in st.session_state:
+    st.session_state.response_thread = None
+
+# --- Helper Functions for Async Operations ---
+
+def run_async_in_thread(coro):
+    """Run an async coroutine in a background thread with its own event loop."""
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    try:
+        return loop.run_until_complete(coro)
+    finally:
+        loop.close()
+
+def start_response_listener(callback):
+    """Start listening for responses in a background thread."""
+    def listener_thread():
+        run_async_in_thread(st.session_state.gemini_live.receive_responses(callback))
+    
+    thread = threading.Thread(target=listener_thread, daemon=True)
+    thread.start()
+    return thread
+
 # --- Callback Functions ---
 # These functions are the "glue" between the UI and the backend.
 
 def start_session_callback():
     """Called when the 'Start Session' button is clicked."""
-    # Run the async start_session method from our backend class
-    asyncio.run(st.session_state.gemini_live.start_session())
+    # Run the async start_session method in a thread
+    threading.Thread(
+        target=run_async_in_thread,
+        args=(st.session_state.gemini_live.start_session(),),
+        daemon=True
+    ).start()
+    
+    # Start the response listener thread
+    if st.session_state.response_thread is None or not st.session_state.response_thread.is_alive():
+        st.session_state.response_thread = start_response_listener(ui_update_callback)
 
 def stop_session_callback():
     """Called when the 'Stop Session' button is clicked."""
     st.session_state.gemini_live.stop_session()
     # Clear the transcript when the session stops
     st.session_state.transcript = []
+    st.session_state.response_thread = None
 
 def ui_update_callback(event_type, data):
     """
@@ -69,7 +105,3 @@ draw_interface(
     is_running=st.session_state.gemini_live.running,
     transcript=st.session_state.transcript
 )
-
-# If the session is running, start the background task to listen for responses
-if st.session_state.gemini_live.running:
-    asyncio.run(st.session_state.gemini_live.receive_responses(ui_update_callback))
