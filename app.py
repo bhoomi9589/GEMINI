@@ -53,11 +53,12 @@ def start_gemini_session_and_listener(gemini_live_instance):
 def main():
     st.title("🎥 Gemini 2.0 Live - Voice & Video Chat")
     
-    # Initialize session state
+    # ✅ Initialize session state FIRST, before any WebRTC component
     if "gemini_live" not in st.session_state:
         st.session_state.gemini_live = GeminiLive()
         st.session_state.transcript = []
         st.session_state.session_active = False
+        st.session_state.webrtc_initialized = False  # ✅ Track WebRTC initialization
     
     # Process any queued transcript updates
     while not transcript_queue.empty():
@@ -72,47 +73,62 @@ def main():
     col1, col2 = st.columns([2, 1])
     
     with col1:
-        # ✅ WebRTC streamer with unique key and explicit mode
-        webrtc_ctx = webrtc_streamer(
-            key="gemini-live-stream",  # ✅ Unique key to prevent registration issues
-            mode=WebRtcMode.SENDRECV,  # ✅ Explicit send/receive mode
-            rtc_configuration={"iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}]},
-            media_stream_constraints={
-                "video": {"width": {"ideal": 640}, "height": {"ideal": 480}},
-                "audio": True
-            },
-            video_frame_callback=st.session_state.gemini_live.send_video_frame,
-            audio_frame_callback=st.session_state.gemini_live.send_audio_frame,
-            async_processing=False,  # ✅ Synchronous callbacks (important!)
-        )
-        
-        # Show WebRTC status
-        if webrtc_ctx.state.playing:
-            st.success("🟢 Camera & Microphone Active")
+        # ✅ Only create WebRTC component after session state is ready
+        if st.session_state.gemini_live:
+            webrtc_ctx = webrtc_streamer(
+                key="gemini-live-stream",
+                mode=WebRtcMode.SENDRECV,
+                rtc_configuration={"iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}]},
+                media_stream_constraints={
+                    "video": {"width": {"ideal": 640}, "height": {"ideal": 480}},
+                    "audio": True
+                },
+                video_frame_callback=st.session_state.gemini_live.send_video_frame,
+                audio_frame_callback=st.session_state.gemini_live.send_audio_frame,
+                async_processing=False,
+                sendback_audio=False,  # ✅ Don't send audio back (reduces errors)
+                desired_playing_state=st.session_state.get("webrtc_playing", False),  # ✅ Control playing state
+            )
+            
+            # ✅ Mark as initialized after first render
+            if not st.session_state.webrtc_initialized:
+                st.session_state.webrtc_initialized = True
+            
+            # Show WebRTC status
+            if webrtc_ctx and webrtc_ctx.state.playing:
+                st.success("🟢 Camera & Microphone Active")
+                st.session_state.webrtc_playing = True
+            else:
+                st.info("⚪ Click START to begin")
+                st.session_state.webrtc_playing = False
         else:
-            st.info("⚪ Click START to begin")
+            st.warning("⚠️ Initializing...")
     
     with col2:
         st.subheader("🎛️ Controls")
         
-        # Start Session button
-        if st.button("▶️ Start Session", disabled=st.session_state.session_active):
-            st.session_state.session_active = True
-            start_gemini_session_and_listener(st.session_state.gemini_live)
-            st.success("Session started!")
-            st.rerun()
-        
-        # Stop Session button
-        if st.button("⏹️ Stop Session", disabled=not st.session_state.session_active):
-            st.session_state.gemini_live.stop_session()
-            st.session_state.session_active = False
-            st.info("Session stopped!")
-            st.rerun()
-        
-        # Clear Transcript button
-        if st.button("🗑️ Clear Transcript"):
-            st.session_state.transcript = []
-            st.rerun()
+        # ✅ Only show controls after WebRTC is initialized
+        if st.session_state.get("webrtc_initialized", False):
+            # Start Session button
+            if st.button("▶️ Start Session", disabled=st.session_state.session_active):
+                st.session_state.session_active = True
+                start_gemini_session_and_listener(st.session_state.gemini_live)
+                st.success("Session started!")
+                st.rerun()
+            
+            # Stop Session button
+            if st.button("⏹️ Stop Session", disabled=not st.session_state.session_active):
+                st.session_state.gemini_live.stop_session()
+                st.session_state.session_active = False
+                st.info("Session stopped!")
+                st.rerun()
+            
+            # Clear Transcript button
+            if st.button("🗑️ Clear Transcript"):
+                st.session_state.transcript = []
+                st.rerun()
+        else:
+            st.info("⏳ Initializing WebRTC component...")
     
     # Display transcript
     st.subheader("📝 Conversation")
