@@ -53,14 +53,29 @@ class GeminiLive:
 
     def stop_session(self):
         """Stops the current Gemini LiveConnect session."""
+        self.running = False
         if self.session:
+            # Mark for cleanup - actual cleanup happens in receive_responses
             try:
-                asyncio.create_task(self.session.__aexit__(None, None, None))
+                # Try to close gracefully if there's a running loop
+                loop = asyncio.get_event_loop()
+                if loop.is_running():
+                    loop.create_task(self._async_cleanup())
+                else:
+                    loop.run_until_complete(self._async_cleanup())
             except:
+                # If we can't clean up properly, just mark as stopped
                 pass
             self.session = None
-        self.running = False
         print("🛑 Gemini session stopped.")
+    
+    async def _async_cleanup(self):
+        """Async cleanup helper."""
+        if self.session:
+            try:
+                await self.session.__aexit__(None, None, None)
+            except:
+                pass
 
     async def send_audio_frame(self, frame: av.AudioFrame):
         """Processes and sends an audio frame from WebRTC to Gemini."""
@@ -105,6 +120,10 @@ class GeminiLive:
         
         try:
             async for response in self.session.receive():
+                # Check if we should stop
+                if not self.running:
+                    break
+                    
                 # Use the callback to send data back to the UI thread
                 if hasattr(response, 'text') and response.text:
                     ui_callback("text", response.text)
@@ -116,5 +135,14 @@ class GeminiLive:
                                 ui_callback("text", part.text)
         except Exception as e:
             print(f"Error receiving response: {e}")
-            self.stop_session()
             ui_callback("error", "Connection error. Session stopped.")
+        finally:
+            # Always clean up the session properly
+            if self.session:
+                try:
+                    await self.session.__aexit__(None, None, None)
+                except:
+                    pass
+                self.session = None
+            self.running = False
+            print("🧹 Response listener cleaned up")
