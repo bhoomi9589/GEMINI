@@ -1,122 +1,131 @@
-# app.py
 import streamlit as st
-import asyncio
-from dotenv import load_dotenv
 import threading
-import queue
+import asyncio
+from queue import Queue
 
-# Import the backend logic and the UI drawing function
 from live import GeminiLive
-from ui import draw_interface
+from streamlit_webrtc import webrtc_streamer, WebRtcMode
 
-# Load environment variables from .env file for local development
-load_dotenv()
+# Thread-safe queue for communication between background thread and main thread
+transcript_queue = Queue()
 
-# --- Session State Initialization ---
-# This ensures that our backend object and transcript persist across Streamlit reruns.
-if 'gemini_live' not in st.session_state:
-    try:
-        # Instantiate our backend logic class
-        st.session_state.gemini_live = GeminiLive()
-    except ValueError as e:
-        # If API key is missing, show an error and stop.
-        st.error(str(e))
-        st.stop()
-
-if 'transcript' not in st.session_state:
-    st.session_state.transcript = []
-
-if 'event_loop' not in st.session_state:
-    st.session_state.event_loop = None
-
-if 'response_thread' not in st.session_state:
-    st.session_state.response_thread = None
-
-if 'transcript_queue' not in st.session_state:
-    st.session_state.transcript_queue = queue.Queue()
-
-# --- Helper Functions for Async Operations ---
+def ui_update_callback(event_type, content):
+    """Callback to queue UI updates from the background thread."""
+    transcript_queue.put((event_type, content))
 
 def run_async_in_thread(coro):
-    """Run an async coroutine in a background thread with its own event loop."""
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
-    try:
-        return loop.run_until_complete(coro)
-    finally:
-        loop.close()
-
-# --- Callback Functions ---
-# These functions are the "glue" between the UI and the backend.
-
-def start_session_callback():
-    """Called when the 'Start Session' button is clicked."""
-    # Get references before starting thread
-    gemini_live = st.session_state.gemini_live
-    transcript_queue = st.session_state.transcript_queue
-    
-    def session_starter():
-        """Start session and then start listener."""
+    """Run an async coroutine in a new thread with its own event loop."""
+    def thread_func():
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
         try:
-            # First, connect to Gemini
-            run_async_in_thread(gemini_live.start_session())
-            # Then start listening for responses
-            run_async_in_thread(gemini_live.receive_responses(
-                lambda event_type, data: transcript_queue.put((event_type, data))
-            ))
+            loop.run_until_complete(coro)
+        finally:
+            loop.close()
+    
+    thread = threading.Thread(target=thread_func, daemon=True)
+    thread.start()
+    return thread
+
+def start_gemini_session_and_listener(gemini_live_instance):
+    """
+    Starts the Gemini session and response listener in a background thread.
+    Both run sequentially in the same thread to ensure proper coordination.
+    """
+    def session_thread():
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        try:
+            # First, connect the session
+            loop.run_until_complete(gemini_live_instance.start_session())
+            # Then, start listening for responses
+            loop.run_until_complete(gemini_live_instance.receive_responses(ui_update_callback))
         except Exception as e:
-            print(f"Error in session startup: {e}")
-            transcript_queue.put(("error", f"Failed to start session: {e}"))
+            print(f"Error in session thread: {e}")
+            ui_update_callback("error", f"Session error: {e}")
+        finally:
+            loop.close()
     
-    # Run the entire startup sequence in a single thread
-    if st.session_state.response_thread is None or not st.session_state.response_thread.is_alive():
-        st.session_state.response_thread = threading.Thread(
-            target=session_starter,
-            daemon=True
+    thread = threading.Thread(target=session_thread, daemon=True)
+    thread.start()
+    return thread
+
+def main():
+    st.title("🎥 Gemini 2.0 Live - Voice & Video Chat")
+    
+    # Initialize session state
+    if "gemini_live" not in st.session_state:
+        st.session_state.gemini_live = GeminiLive()
+        st.session_state.transcript = []
+        st.session_state.session_active = False
+    
+    # Process any queued transcript updates
+    while not transcript_queue.empty():
+        event_type, content = transcript_queue.get()
+        if event_type == "text":
+            st.session_state.transcript.append({"role": "assistant", "content": content})
+            st.rerun()
+        elif event_type == "error":
+            st.error(content)
+    
+    # Main UI
+    col1, col2 = st.columns([2, 1])
+    
+    with col1:
+        # ✅ WebRTC streamer with unique key and explicit mode
+        webrtc_ctx = webrtc_streamer(
+            key="gemini-live-stream",  # ✅ Unique key to prevent registration issues
+            mode=WebRtcMode.SENDRECV,  # ✅ Explicit send/receive mode
+            rtc_configuration={"iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}]},
+            media_stream_constraints={
+                "video": {"width": {"ideal": 640}, "height": {"ideal": 480}},
+                "audio": True
+            },
+            video_frame_callback=st.session_state.gemini_live.send_video_frame,
+            audio_frame_callback=st.session_state.gemini_live.send_audio_frame,
+            async_processing=False,  # ✅ Synchronous callbacks (important!)
         )
-        st.session_state.response_thread.start()
+        
+        # Show WebRTC status
+        if webrtc_ctx.state.playing:
+            st.success("🟢 Camera & Microphone Active")
+        else:
+            st.info("⚪ Click START to begin")
+    
+    with col2:
+        st.subheader("🎛️ Controls")
+        
+        # Start Session button
+        if st.button("▶️ Start Session", disabled=st.session_state.session_active):
+            st.session_state.session_active = True
+            start_gemini_session_and_listener(st.session_state.gemini_live)
+            st.success("Session started!")
+            st.rerun()
+        
+        # Stop Session button
+        if st.button("⏹️ Stop Session", disabled=not st.session_state.session_active):
+            st.session_state.gemini_live.stop_session()
+            st.session_state.session_active = False
+            st.info("Session stopped!")
+            st.rerun()
+        
+        # Clear Transcript button
+        if st.button("🗑️ Clear Transcript"):
+            st.session_state.transcript = []
+            st.rerun()
+    
+    # Display transcript
+    st.subheader("📝 Conversation")
+    if st.session_state.transcript:
+        for message in st.session_state.transcript:
+            role = message["role"]
+            content = message["content"]
+            if role == "assistant":
+                st.chat_message("assistant").write(content)
+            else:
+                st.chat_message("user").write(content)
+    else:
+        st.info("Start a session and speak to begin the conversation!")
 
-def stop_session_callback():
-    """Called when the 'Stop Session' button is clicked."""
-    st.session_state.gemini_live.stop_session()
-    # Clear the transcript when the session stops
-    st.session_state.transcript = []
-    st.session_state.response_thread = None
-    # Clear the queue
-    while not st.session_state.transcript_queue.empty():
-        try:
-            st.session_state.transcript_queue.get_nowait()
-        except queue.Empty:
-            break
-
-# --- Main Application Execution ---
-
-# Process any messages from the background thread
-messages_processed = False
-while not st.session_state.transcript_queue.empty():
-    try:
-        event_type, data = st.session_state.transcript_queue.get_nowait()
-        if event_type == "error":
-            st.error(data)
-        elif event_type == "text":
-            st.session_state.transcript.append(f"**🤖 Gemini:** {data}")
-            messages_processed = True
-        elif event_type == "tool":
-            st.session_state.transcript.append(f"*{data}*")
-            messages_processed = True
-    except queue.Empty:
-        break
-
-# If we processed messages, trigger a rerun to show them
-if messages_processed:
-    st.rerun()
-
-# Draw the user interface, passing in the necessary functions and state
-draw_interface(
-    start_session_callback=start_session_callback,
-    stop_session_callback=stop_session_callback,
-    video_frame_callback=st.session_state.gemini_live.send_video_frame,
-    audio_frame_callback=st.session_state.gemini_live.send_audio_frame,
-    is_running=st.session_state.gemini_live.running,
-    transcript=st.session_state.transcript
-)
+if __name__ == "__main__":
+    main()

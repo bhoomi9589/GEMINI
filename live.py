@@ -37,11 +37,16 @@ class GeminiLive:
         }
         self.session = None
         self.running = False
+        self.event_loop = None  # ✅ Store event loop reference
 
     async def start_session(self):
         """Starts a new Gemini LiveConnect session."""
         print("✅ Starting Gemini session...")
         self.running = True
+        
+        # ✅ Store the event loop from the async context
+        self.event_loop = asyncio.get_event_loop()
+        
         try:
             # Connect using the new AsyncLive API
             self.session = await self.client.aio.live.connect(model=self.model, config=self.config).__aenter__()
@@ -49,51 +54,30 @@ class GeminiLive:
         except Exception as e:
             print(f"❌ Error starting session: {e}")
             self.running = False
+            self.event_loop = None
             raise
 
     def stop_session(self):
         """Stops the current Gemini LiveConnect session."""
+        print("🛑 Stopping Gemini session...")
         self.running = False
-        if self.session:
-            # Mark for cleanup - actual cleanup happens in receive_responses
-            try:
-                # Try to close gracefully if there's a running loop
-                loop = asyncio.get_event_loop()
-                if loop.is_running():
-                    loop.create_task(self._async_cleanup())
-                else:
-                    loop.run_until_complete(self._async_cleanup())
-            except:
-                # If we can't clean up properly, just mark as stopped
-                pass
-            self.session = None
-        print("🛑 Gemini session stopped.")
-    
-    async def _async_cleanup(self):
-        """Async cleanup helper."""
-        if self.session:
-            try:
-                await self.session.__aexit__(None, None, None)
-            except:
-                pass
+        # Cleanup happens in receive_responses finally block
 
     def send_audio_frame(self, frame: av.AudioFrame):
-        """Processes and sends an audio frame from WebRTC to Gemini (synchronous wrapper)."""
-        if not self.running or not self.session:
+        """Processes and sends an audio frame from WebRTC to Gemini (synchronous, thread-safe)."""
+        if not self.running or not self.session or not self.event_loop:
             return
         
-        # Create async task to send audio
-        audio_data = frame.to_ndarray().tobytes()
-        audio_b64 = base64.b64encode(audio_data).decode('utf-8')
-        
-        # Schedule the async send operation
         try:
-            loop = asyncio.get_event_loop()
-            if loop.is_running():
-                asyncio.create_task(self._send_audio_async(audio_b64))
-            else:
-                # Fallback: run in the event loop
-                loop.run_until_complete(self._send_audio_async(audio_b64))
+            # Convert audio frame to bytes
+            audio_data = frame.to_ndarray().tobytes()
+            audio_b64 = base64.b64encode(audio_data).decode('utf-8')
+            
+            # ✅ Thread-safe task scheduling
+            asyncio.run_coroutine_threadsafe(
+                self._send_audio_async(audio_b64),
+                self.event_loop
+            )
         except Exception as e:
             print(f"Error scheduling audio send: {e}")
     
@@ -110,27 +94,25 @@ class GeminiLive:
             print(f"Error sending audio: {e}")
 
     def send_video_frame(self, frame: av.VideoFrame):
-        """Processes and sends a video frame from WebRTC to Gemini (synchronous wrapper)."""
-        if not self.running or not self.session:
+        """Processes and sends a video frame from WebRTC to Gemini (synchronous, thread-safe)."""
+        if not self.running or not self.session or not self.event_loop:
             return
 
-        # Convert frame to image
-        img = frame.to_image()
-        image_io = io.BytesIO()
-        img.save(image_io, format="jpeg")
-        image_io.seek(0)
-        
-        image_data = image_io.getvalue()
-        image_b64 = base64.b64encode(image_data).decode('utf-8')
-        
-        # Schedule the async send operation
         try:
-            loop = asyncio.get_event_loop()
-            if loop.is_running():
-                asyncio.create_task(self._send_video_async(image_b64))
-            else:
-                # Fallback: run in the event loop
-                loop.run_until_complete(self._send_video_async(image_b64))
+            # Convert frame to JPEG
+            img = frame.to_image()
+            image_io = io.BytesIO()
+            img.save(image_io, format="jpeg")
+            image_io.seek(0)
+            
+            image_data = image_io.getvalue()
+            image_b64 = base64.b64encode(image_data).decode('utf-8')
+            
+            # ✅ Thread-safe task scheduling
+            asyncio.run_coroutine_threadsafe(
+                self._send_video_async(image_b64),
+                self.event_loop
+            )
         except Exception as e:
             print(f"Error scheduling video send: {e}")
     
@@ -152,9 +134,11 @@ class GeminiLive:
             return
         
         try:
+            print("👂 Listening for Gemini responses...")
             async for response in self.session.receive():
                 # Check if we should stop
                 if not self.running:
+                    print("⏹️ Stop requested, breaking receive loop")
                     break
                     
                 # Use the callback to send data back to the UI thread
@@ -166,16 +150,22 @@ class GeminiLive:
                         for part in server_content.model_turn.parts:
                             if hasattr(part, 'text') and part.text:
                                 ui_callback("text", part.text)
+        except asyncio.CancelledError:
+            print("🔴 Receive task cancelled")
         except Exception as e:
-            print(f"Error receiving response: {e}")
-            ui_callback("error", "Connection error. Session stopped.")
+            print(f"❌ Error receiving response: {e}")
+            ui_callback("error", f"Connection error: {e}")
         finally:
-            # Always clean up the session properly
+            # ✅ Always clean up properly
+            print("🧹 Cleaning up Gemini session...")
             if self.session:
                 try:
                     await self.session.__aexit__(None, None, None)
-                except:
-                    pass
+                    print("✅ Session closed gracefully")
+                except Exception as e:
+                    print(f"⚠️ Error during cleanup: {e}")
                 self.session = None
+            
             self.running = False
-            print("🧹 Response listener cleaned up")
+            self.event_loop = None
+            print("✅ Response listener cleaned up")
