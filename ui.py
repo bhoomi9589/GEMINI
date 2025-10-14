@@ -1,4 +1,5 @@
 import streamlit as st
+import uuid
 from streamlit_webrtc import webrtc_streamer, WebRtcMode
 
 def draw_interface(
@@ -23,6 +24,14 @@ def draw_interface(
     st.title("🤖 Gemini 2.0 Live Assistant")
     st.caption("Real-time multimodal AI powered by Google Gemini 2.0")
 
+    # ✅ Initialize stable component key once per session
+    if 'webrtc_component_key' not in st.session_state:
+        st.session_state.webrtc_component_key = f"gemini-live-{uuid.uuid4().hex[:8]}"
+
+    # ✅ Initialize transcript if not passed
+    if 'transcript' not in st.session_state:
+        st.session_state.transcript = []
+
     # Main layout
     col1, col2 = st.columns([0.6, 0.4])
 
@@ -31,84 +40,57 @@ def draw_interface(
         
         # ✅ Universal WebRTC configuration for ALL devices
         try:
-            ctx = webrtc_streamer(
-                key="gemini-live-assistant",
+            webrtc_ctx = webrtc_streamer(
+                key=st.session_state.webrtc_component_key,
                 mode=WebRtcMode.SENDRECV,
                 rtc_configuration={
                     "iceServers": [
                         {"urls": ["stun:stun.l.google.com:19302"]},
                         {"urls": ["stun:stun1.l.google.com:19302"]},
-                        {"urls": ["stun:stun2.l.google.com:19302"]},
-                    ],
-                    "iceTransportPolicy": "all"
+                        {"urls": ["stun:stun.stunprotocol.org:3478"]},
+                    ]
                 },
                 media_stream_constraints={
                     "video": {
-                        # ✅ Flexible constraints for any device
-                        "width": {"min": 320, "ideal": 640, "max": 1920},
-                        "height": {"min": 240, "ideal": 480, "max": 1080},
-                        "frameRate": {"min": 10, "ideal": 30, "max": 60},
-                        # ✅ Mobile support
-                        "facingMode": "user",  # Front camera by default
-                        # ✅ Desktop support
-                        "aspectRatio": {"ideal": 1.333333}
+                        "width": {"min": 320, "ideal": 640, "max": 1280},
+                        "height": {"min": 240, "ideal": 480, "max": 720},
+                        "frameRate": {"min": 10, "ideal": 15, "max": 30},
+                        "facingMode": "user"  # Front camera for mobile
                     },
                     "audio": {
-                        # ✅ Universal audio constraints
-                        "echoCancellation": {"ideal": True},
-                        "noiseSuppression": {"ideal": True},
-                        "autoGainControl": {"ideal": True},
-                        # ✅ Mobile optimization
-                        "sampleRate": {"ideal": 48000},
-                        "channelCount": {"ideal": 1},
-                        # ✅ Latency optimization
-                        "latency": {"ideal": 0.01}
+                        "echoCancellation": True,
+                        "noiseSuppression": True,
+                        "autoGainControl": True,
+                        "sampleRate": 16000,
+                        "channelCount": 1
                     }
                 },
                 video_frame_callback=video_frame_callback,
                 audio_frame_callback=audio_frame_callback,
-                async_processing=False,
-                # ✅ No audio sendback to prevent echo
-                sendback_audio=False,
+                async_processing=True,
+                desired_playing_state=is_running
             )
-            
-            # Status indicator
-            if ctx:
-                if ctx.state.playing:
-                    st.success("🟢 Camera & Microphone Active")
-                else:
-                    st.info("⚪ Click START in the video player above")
-                    st.caption("📱 On mobile: Allow camera and microphone permissions")
-            else:
-                st.warning("⏳ Initializing WebRTC component...")
                 
         except Exception as e:
-            st.error(f"⚠️ WebRTC Error: {e}")
-            st.info("💡 Try refreshing the page or checking permissions")
+            st.error(f"❌ Camera/Microphone Error: {str(e)}")
+            st.info("📱 **Mobile Users**: Tap 'Allow' when prompted for camera/microphone access")
+            st.info("🖥️ **Desktop Users**: Check browser permissions for camera/microphone")
 
     with col2:
         st.subheader("🎛️ Controls & Transcript")
         
         # Control buttons
         if not is_running:
-            if st.button("🚀 Start Session", use_container_width=True, type="primary"):
-                try:
-                    start_session_callback()
-                    st.success("✅ Session Started!")
-                    st.rerun()
-                except Exception as e:
-                    st.error(f"❌ Start Error: {e}")
+            if st.button("🚀 Start Live Session", type="primary", use_container_width=True, key="start_btn"):
+                start_session_callback()
+                st.rerun()
         else:
-            if st.button("🛑 Stop Session", use_container_width=True):
-                try:
-                    stop_session_callback()
-                    st.info("⏹️ Session Stopped")
-                    st.rerun()
-                except Exception as e:
-                    st.error(f"❌ Stop Error: {e}")
+            if st.button("⏹️ Stop Session", type="secondary", use_container_width=True, key="stop_btn"):
+                stop_session_callback()
+                st.rerun()
         
         # Clear transcript
-        if st.button("🗑️ Clear Transcript", use_container_width=True, disabled=not transcript):
+        if st.button("🗑️ Clear Transcript", use_container_width=True, disabled=not transcript, key="clear_btn"):
             st.session_state.transcript = []
             st.rerun()
         
@@ -117,9 +99,9 @@ def draw_interface(
         # Status indicator
         st.markdown("**Session Status:**")
         if is_running:
-            st.success("🟢 Active - Listening")
+            st.success("🟢 **LIVE** - AI is listening and watching")
         else:
-            st.info("⚪ Inactive")
+            st.info("🔴 **STOPPED** - Click 'Start' to begin")
         
         st.markdown("---")
         
@@ -127,65 +109,53 @@ def draw_interface(
         st.markdown("**Conversation:**")
         
         if transcript:
-            # Scrollable transcript container
-            transcript_container = st.container(height=400)
-            with transcript_container:
-                for entry in transcript:
-                    if entry.startswith("**🤖 Gemini:**"):
-                        # Assistant message
-                        content = entry.replace("**🤖 Gemini:**", "").strip()
-                        with st.chat_message("assistant"):
-                            st.markdown(content)
-                    elif entry.startswith("*🛠️"):
-                        # Tool call
-                        st.info(entry.strip("*"))
-                    else:
-                        # User message
-                        with st.chat_message("user"):
-                            st.markdown(entry)
+            # Create scrollable transcript container
+            with st.container():
+                for i, entry in enumerate(reversed(transcript[-10:])):  # Show last 10 entries
+                    if entry.get('type') == 'ai':
+                        st.markdown(f"🤖 **AI**: {entry['content']}")
+                    elif entry.get('type') == 'user':
+                        st.markdown(f"👤 **You**: {entry['content']}")
+                    elif entry.get('type') == 'ai_audio':
+                        st.markdown(f"🔊 **AI**: {entry['content']}")
+                    elif entry.get('type') == 'error':
+                        st.error(f"❌ {entry['content']}")
+                    
+                    if i < len(transcript[-10:]) - 1:
+                        st.markdown("---")
         else:
-            st.info("💬 Start a session and speak to begin!")
+            st.markdown("💬 *Conversation will appear here...*")
     
     # Mobile-friendly troubleshooting
     with st.expander("🔧 Device Support & Troubleshooting"):
         st.markdown("""
-        ### 📱 Mobile Devices (iOS/Android)
-        - **Camera Access:** Tap "Allow" when prompted
-        - **Microphone:** Enable in browser settings
-        - **Best Browsers:** Chrome, Safari, Edge
-        - **Portrait Mode:** Rotate device for better view
+        ### 📱 **Mobile Devices (iOS/Android)**
+        - **Chrome/Safari**: Fully supported with camera + microphone
+        - **Permissions**: Tap "Allow" when prompted for camera/mic access
+        - **Performance**: Works best on newer devices (2019+)
+        - **Network**: Requires stable internet connection
         
-        ### 💻 Desktop/Laptop
-        - **Built-in Camera:** Automatically detected
-        - **External Webcam:** Select from browser prompt
-        - **Microphone:** Choose from system devices
-        - **Best Browsers:** Chrome, Edge, Firefox
+        ### 🖥️ **Desktop/Laptop**
+        - **Chrome/Edge**: Best performance and compatibility
+        - **Firefox**: Supported with minor limitations
+        - **Safari**: macOS - fully supported
+        - **Permissions**: Check browser settings if camera/mic blocked
         
-        ### 🔧 Common Issues
+        ### 🔧 **Common Issues**
+        - **No Video**: Check camera permissions in browser settings
+        - **No Audio**: Check microphone permissions and ensure not muted
+        - **Poor Quality**: Try closing other browser tabs or apps
+        - **Connection Issues**: Refresh page and try again
         
-        **"Camera not found":**
-        - Check device permissions in browser settings
-        - Try refreshing the page (F5)
-        - Restart your browser
+        ### 🌐 **Browser Settings**
+        1. Click the 🔒 lock icon in address bar
+        2. Allow Camera and Microphone access
+        3. Refresh the page if needed
         
-        **"No audio":**
-        - Ensure microphone is not muted
-        - Check system audio settings
-        - Try another browser tab
-        
-        **"Connection failed":**
-        - Check internet connection
-        - Disable VPN temporarily
-        - Allow WebRTC in firewall
-        
-        ### 🌐 Supported Devices
-        ✅ iPhone (iOS 14+)  
-        ✅ Android phones (Android 10+)  
-        ✅ Windows laptops  
-        ✅ MacBooks  
-        ✅ Linux desktop  
-        ✅ Chromebooks  
-        ✅ Tablets (iPad, Android)  
+        ### 📊 **System Requirements**
+        - **Internet**: 2+ Mbps upload speed recommended
+        - **RAM**: 4GB+ recommended for smooth operation
+        - **Browser**: Latest version of Chrome, Edge, Safari, or Firefox
         """)
     
     # Footer
