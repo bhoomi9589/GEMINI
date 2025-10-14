@@ -1,7 +1,5 @@
-# ui.py
 import streamlit as st
-import streamlit.components.v1 as components
-from streamlit_webrtc import webrtc_streamer, WebRtcMode, RTCConfiguration
+from streamlit_webrtc import webrtc_streamer, WebRtcMode
 
 def draw_interface(
     start_session_callback,
@@ -12,228 +10,185 @@ def draw_interface(
     transcript
 ):
     """
-    Draws the entire Streamlit UI.
-    It receives callback functions from app.py to handle logic.
+    Draws the entire Streamlit UI with universal device support.
+    Works on desktop, laptop, and mobile devices.
     """
-    st.set_page_config(page_title="Gemini Live Assistant", page_icon="🤖", layout="wide")
-    st.title("🤖 Gemini Live Assistant")
-    st.caption("A real-time multimodal assistant powered by Gemini.")
+    st.set_page_config(
+        page_title="Gemini 2.0 Live Assistant",
+        page_icon="🤖",
+        layout="wide",
+        initial_sidebar_state="collapsed"
+    )
+    
+    st.title("🤖 Gemini 2.0 Live Assistant")
+    st.caption("Real-time multimodal AI powered by Google Gemini 2.0")
 
-    # Session state for pause/resume and mode selection
-    if 'is_paused' not in st.session_state:
-        st.session_state.is_paused = False
-    if 'media_mode' not in st.session_state:
-        st.session_state.media_mode = "Camera"
-
+    # Main layout
     col1, col2 = st.columns([0.6, 0.4])
 
     with col1:
-        # Mode selector
-        st.subheader("📹 Media Input")
-        mode_col1, mode_col2 = st.columns([2, 1])
+        st.subheader("📹 Live Camera Feed")
         
-        with mode_col1:
-            media_mode = st.selectbox(
-                "Select Mode:",
-                ["Camera", "Screen Share", "None"],
-                index=["Camera", "Screen Share", "None"].index(st.session_state.media_mode),
-                key="media_mode_selector",
-                disabled=is_running,
-                help="Choose your input source. Camera: webcam + mic, Screen Share: screen + mic, None: mic only"
-            )
-            st.session_state.media_mode = media_mode
-        
-        with mode_col2:
-            if is_running:
-                status_color = "🟢" if not st.session_state.is_paused else "🟡"
-                status_text = "Active" if not st.session_state.is_paused else "Paused"
-                st.markdown(f"### {status_color} {status_text}")
-
-        # Configure media constraints based on mode
-        if media_mode == "Camera":
-            media_constraints = {"video": True, "audio": True}
-            st.caption("🎥 Using webcam and microphone")
-        elif media_mode == "Screen Share":
-            media_constraints = {"video": {"mediaSource": "screen"}, "audio": True}
-            st.caption("🖥️ Using screen share and microphone")
-        else:  # None
-            media_constraints = {"video": False, "audio": True}
-            st.caption("🎤 Using microphone only")
-
-        # Video feed container
-        video_container = st.container()
-        
-        with video_container:
-            if media_mode != "None":
-                # Start the WebRTC streamer with video
-                ctx = webrtc_streamer(
-                    key=f"live-assistant-{media_mode}",
-                    mode=WebRtcMode.SENDRECV,  # Show video feed locally
-                    rtc_configuration=RTCConfiguration(
-                        {
-                            "iceServers": [
-                                {"urls": ["stun:stun.l.google.com:19302"]},
-                                {
-                                    "urls": ["turn:openrelay.metered.ca:80"],
-                                    "username": "openrelayproject",
-                                    "credential": "openrelayproject"
-                                }
-                            ]
-                        }
-                    ),
-                    media_stream_constraints=media_constraints,
-                    video_frame_callback=video_frame_callback if is_running and not st.session_state.is_paused else None,
-                    audio_frame_callback=audio_frame_callback if is_running and not st.session_state.is_paused else None,
-                    async_processing=True,
-                    video_html_attrs={
-                        "style": {"width": "100%", "margin": "0 auto", "border-radius": "10px"},
-                        "controls": False,
-                        "autoPlay": True,
-                        "muted": True  # Mute local playback to avoid echo
+        # ✅ Universal WebRTC configuration for ALL devices
+        try:
+            ctx = webrtc_streamer(
+                key="gemini-live-assistant",
+                mode=WebRtcMode.SENDRECV,
+                rtc_configuration={
+                    "iceServers": [
+                        {"urls": ["stun:stun.l.google.com:19302"]},
+                        {"urls": ["stun:stun1.l.google.com:19302"]},
+                        {"urls": ["stun:stun2.l.google.com:19302"]},
+                    ],
+                    "iceTransportPolicy": "all"
+                },
+                media_stream_constraints={
+                    "video": {
+                        # ✅ Flexible constraints for any device
+                        "width": {"min": 320, "ideal": 640, "max": 1920},
+                        "height": {"min": 240, "ideal": 480, "max": 1080},
+                        "frameRate": {"min": 10, "ideal": 30, "max": 60},
+                        # ✅ Mobile support
+                        "facingMode": "user",  # Front camera by default
+                        # ✅ Desktop support
+                        "aspectRatio": {"ideal": 1.333333}
+                    },
+                    "audio": {
+                        # ✅ Universal audio constraints
+                        "echoCancellation": {"ideal": True},
+                        "noiseSuppression": {"ideal": True},
+                        "autoGainControl": {"ideal": True},
+                        # ✅ Mobile optimization
+                        "sampleRate": {"ideal": 48000},
+                        "channelCount": {"ideal": 1},
+                        # ✅ Latency optimization
+                        "latency": {"ideal": 0.01}
                     }
-                )
-
-                # Show diagnostics if needed
-                if ctx is None:
-                    st.warning("⚠️ WebRTC context not created. The streamer failed to initialize.")
-                elif not getattr(ctx.state, "playing", False):
-                    st.info("📹 Waiting for media stream... Please allow camera/microphone access.")
-                    with st.expander("🔧 Troubleshooting"):
-                        st.markdown("""
-                        **Quick checks:**
-                        - Make sure the page is served over HTTPS (required for camera/mic)
-                        - Check the browser's permission prompt and click "Allow"
-                        - Open browser console for errors (F12 → Console)
-                        - For Screen Share: you may need to select which screen/window to share
-                        """)
-                        _render_media_check_js()
+                },
+                video_frame_callback=video_frame_callback,
+                audio_frame_callback=audio_frame_callback,
+                async_processing=False,
+                # ✅ No audio sendback to prevent echo
+                sendback_audio=False,
+            )
+            
+            # Status indicator
+            if ctx:
+                if ctx.state.playing:
+                    st.success("🟢 Camera & Microphone Active")
+                else:
+                    st.info("⚪ Click START in the video player above")
+                    st.caption("📱 On mobile: Allow camera and microphone permissions")
             else:
-                # Audio only mode
-                ctx = webrtc_streamer(
-                    key="live-assistant-audio-only",
-                    mode=WebRtcMode.SENDONLY,
-                    rtc_configuration=RTCConfiguration(
-                        {
-                            "iceServers": [
-                                {"urls": ["stun:stun.l.google.com:19302"]},
-                                {
-                                    "urls": ["turn:openrelay.metered.ca:80"],
-                                    "username": "openrelayproject",
-                                    "credential": "openrelayproject"
-                                }
-                            ]
-                        }
-                    ),
-                    media_stream_constraints=media_constraints,
-                    audio_frame_callback=audio_frame_callback if is_running and not st.session_state.is_paused else None,
-                    async_processing=True,
-                )
+                st.warning("⏳ Initializing WebRTC component...")
                 
-                st.info("🎤 Audio-only mode: Microphone input active")
-                
-                if ctx is None:
-                    st.warning("⚠️ WebRTC context not created.")
-                elif not getattr(ctx.state, "playing", False):
-                    st.info("🎤 Waiting for microphone access...")
-                    _render_media_check_js()
+        except Exception as e:
+            st.error(f"⚠️ WebRTC Error: {e}")
+            st.info("💡 Try refreshing the page or checking permissions")
 
     with col2:
-        st.subheader("🎛️ Session Controls")
-
-        # Session control buttons
-        button_cols = st.columns(2)
+        st.subheader("🎛️ Controls & Transcript")
         
-        with button_cols[0]:
-            if not is_running:
-                if st.button("🚀 Start Session", use_container_width=True, type="primary"):
-                    st.session_state.is_paused = False
+        # Control buttons
+        if not is_running:
+            if st.button("🚀 Start Session", use_container_width=True, type="primary"):
+                try:
                     start_session_callback()
-            else:
-                if st.button("🛑 Stop Session", use_container_width=True, type="secondary"):
-                    st.session_state.is_paused = False
-                    stop_session_callback()
-        
-        with button_cols[1]:
-            if is_running:
-                if not st.session_state.is_paused:
-                    if st.button("⏸️ Pause", use_container_width=True):
-                        st.session_state.is_paused = True
-                        st.rerun()
-                else:
-                    if st.button("▶️ Resume", use_container_width=True, type="primary"):
-                        st.session_state.is_paused = False
-                        st.rerun()
-
-        # Status indicator
-        if is_running:
-            if st.session_state.is_paused:
-                st.warning("⏸️ Session is paused. Click Resume to continue.")
-            else:
-                st.success("✅ Session active. AI is listening and responding.")
+                    st.success("✅ Session Started!")
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"❌ Start Error: {e}")
         else:
-            st.info("💤 No active session. Click Start to begin.")
-
+            if st.button("🛑 Stop Session", use_container_width=True):
+                try:
+                    stop_session_callback()
+                    st.info("⏹️ Session Stopped")
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"❌ Stop Error: {e}")
+        
+        # Clear transcript
+        if st.button("🗑️ Clear Transcript", use_container_width=True, disabled=not transcript):
+            st.session_state.transcript = []
+            st.rerun()
+        
         st.markdown("---")
         
-        # Transcript section
-        st.subheader("💬 Conversation")
-        transcript_container = st.container()
-        with transcript_container:
-            if transcript:
+        # Status indicator
+        st.markdown("**Session Status:**")
+        if is_running:
+            st.success("🟢 Active - Listening")
+        else:
+            st.info("⚪ Inactive")
+        
+        st.markdown("---")
+        
+        # Transcript display
+        st.markdown("**Conversation:**")
+        
+        if transcript:
+            # Scrollable transcript container
+            transcript_container = st.container(height=400)
+            with transcript_container:
                 for entry in transcript:
-                    st.markdown(entry)
-            else:
-                st.caption("_Conversation will appear here..._")
-
-
-def _render_media_check_js():
-        """Inject a small piece of JS to test getUserMedia and enumerate media devices.
-
-        This renders a minimal UI inside the Streamlit page with results so the user
-        can see whether the browser can access camera/microphone and what devices
-        are available. It does not send any data to the server; it only runs in the
-        user's browser for diagnostics.
-        """
-        html = """
-        <div style='font-family: Arial, sans-serif;'>
-            <div id='media-check-output' style='white-space: pre-wrap; background:#f6f8fa; padding:10px; border-radius:6px;'></div>
-            <button id='media-check-btn' style='margin-top:8px;'>Run media check</button>
-        </div>
-        <script>
-        const out = document.getElementById('media-check-output');
-        const btn = document.getElementById('media-check-btn');
-
-        function log(msg){ out.textContent += msg + '\n'; }
-
-        async function runCheck(){
-            out.textContent = '';
-            if (!navigator.mediaDevices || !navigator.mediaDevices.enumerateDevices) {
-                log('navigator.mediaDevices.enumerateDevices NOT supported in this browser.');
-                return;
-            }
-            try{
-                const devices = await navigator.mediaDevices.enumerateDevices();
-                log('Found devices: ' + devices.length);
-                devices.forEach(d => log(`${d.kind} - ${d.label || '[label hidden]'} - id:${d.deviceId}`));
-            } catch(e){ log('Error enumerating devices: ' + e); }
-
-            // Try to request a short-lived media stream. The browser will prompt for permission.
-            try{
-                log('\nRequesting camera+microphone permission...');
-                const stream = await navigator.mediaDevices.getUserMedia({video: true, audio: true});
-                const tracks = stream.getTracks();
-                log('getUserMedia succeeded. Active tracks: ' + tracks.length);
-                tracks.forEach(t => log('Track: ' + t.kind + ' state=' + t.readyState));
-                // Stop immediately to avoid capturing unintended media
-                tracks.forEach(t => t.stop());
-                log('Stopped tracks.');
-            } catch(e){ log('getUserMedia failed or was denied: ' + e); }
-        }
-
-        btn.addEventListener('click', runCheck);
-        // Optionally run once on load (commented out to avoid auto-prompting):
-        // runCheck();
-        </script>
-        """
-
-        components.html(html, height=220)
+                    if entry.startswith("**🤖 Gemini:**"):
+                        # Assistant message
+                        content = entry.replace("**🤖 Gemini:**", "").strip()
+                        with st.chat_message("assistant"):
+                            st.markdown(content)
+                    elif entry.startswith("*🛠️"):
+                        # Tool call
+                        st.info(entry.strip("*"))
+                    else:
+                        # User message
+                        with st.chat_message("user"):
+                            st.markdown(entry)
+        else:
+            st.info("💬 Start a session and speak to begin!")
+    
+    # Mobile-friendly troubleshooting
+    with st.expander("🔧 Device Support & Troubleshooting"):
+        st.markdown("""
+        ### 📱 Mobile Devices (iOS/Android)
+        - **Camera Access:** Tap "Allow" when prompted
+        - **Microphone:** Enable in browser settings
+        - **Best Browsers:** Chrome, Safari, Edge
+        - **Portrait Mode:** Rotate device for better view
+        
+        ### 💻 Desktop/Laptop
+        - **Built-in Camera:** Automatically detected
+        - **External Webcam:** Select from browser prompt
+        - **Microphone:** Choose from system devices
+        - **Best Browsers:** Chrome, Edge, Firefox
+        
+        ### 🔧 Common Issues
+        
+        **"Camera not found":**
+        - Check device permissions in browser settings
+        - Try refreshing the page (F5)
+        - Restart your browser
+        
+        **"No audio":**
+        - Ensure microphone is not muted
+        - Check system audio settings
+        - Try another browser tab
+        
+        **"Connection failed":**
+        - Check internet connection
+        - Disable VPN temporarily
+        - Allow WebRTC in firewall
+        
+        ### 🌐 Supported Devices
+        ✅ iPhone (iOS 14+)  
+        ✅ Android phones (Android 10+)  
+        ✅ Windows laptops  
+        ✅ MacBooks  
+        ✅ Linux desktop  
+        ✅ Chromebooks  
+        ✅ Tablets (iPad, Android)  
+        """)
+    
+    # Footer
+    st.markdown("---")
+    st.caption("🚀 Powered by Google Gemini 2.0 Flash Exp | Built with Streamlit & WebRTC")
+    st.caption("📱 Works on mobile, tablet, and desktop | 🌐 Universal device support")

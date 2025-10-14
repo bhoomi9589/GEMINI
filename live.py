@@ -1,4 +1,3 @@
-# live.py
 import os
 import asyncio
 import base64
@@ -44,7 +43,7 @@ class GeminiLive:
         print("✅ Starting Gemini session...")
         self.running = True
         
-        # ✅ Store the event loop from the async context
+        # Store the event loop
         self.event_loop = asyncio.get_event_loop()
         
         try:
@@ -72,7 +71,7 @@ class GeminiLive:
             audio_data = frame.to_ndarray().tobytes()
             audio_b64 = base64.b64encode(audio_data).decode('utf-8')
             
-            # ✅ Thread-safe task scheduling
+            # Thread-safe task scheduling
             asyncio.run_coroutine_threadsafe(
                 self._send_audio_async(audio_b64),
                 self.event_loop
@@ -107,7 +106,7 @@ class GeminiLive:
             image_data = image_io.getvalue()
             image_b64 = base64.b64encode(image_data).decode('utf-8')
             
-            # ✅ Thread-safe task scheduling
+            # Thread-safe task scheduling
             asyncio.run_coroutine_threadsafe(
                 self._send_video_async(image_b64),
                 self.event_loop
@@ -155,11 +154,10 @@ class GeminiLive:
             print(f"❌ Error receiving response: {e}")
             ui_callback("error", f"Connection error: {e}")
         finally:
-            # ✅ Proper cleanup without using __aexit__
+            # Proper cleanup
             print("🧹 Cleaning up Gemini session...")
             if self.session:
                 try:
-                    # Just close the websocket connection properly
                     if hasattr(self.session, 'close'):
                         await self.session.close()
                     elif hasattr(self.session, 'disconnect'):
