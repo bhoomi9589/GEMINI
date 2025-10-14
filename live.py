@@ -3,11 +3,13 @@ import base64
 import io
 import logging
 import os
+import streamlit as st
 from PIL import Image
 import av
 
-from google import genai
-from google.genai import types
+# Updated imports for Google Generative AI
+import google.generativeai as genai
+from google.generativeai import types
 
 class GeminiLive:
     """
@@ -15,165 +17,123 @@ class GeminiLive:
     This class is completely independent of Streamlit or Flask.
     """
     def __init__(self):
-        # Initialize API key
+        # Initialize API key - try multiple sources for compatibility
+        api_key = None
+        
+        # Try 1: Environment variable (local development with .env)
         api_key = os.getenv("GEMINI_API_KEY")
+        
+        # Try 2: Streamlit secrets (cloud deployment)
         if not api_key:
-            raise ValueError("GEMINI_API_KEY environment variable not set")
+            try:
+                api_key = st.secrets["GEMINI_API_KEY"]
+            except (KeyError, AttributeError):
+                pass
         
-        # Configure Gemini client
+        # Try 3: Check if it's still a placeholder
+        if not api_key or api_key == "your_actual_gemini_api_key_here":
+            raise ValueError(
+                "🔑 GEMINI_API_KEY not found!\n\n"
+                "📍 Local Development: Set GEMINI_API_KEY in your .env file\n"
+                "☁️ Streamlit Cloud: Add GEMINI_API_KEY to app secrets\n"
+                "🔗 Get API key: https://makersuite.google.com/app/apikey"
+            )
+        
+        # Configure Gemini client with correct method
         genai.configure(api_key=api_key)
-        self.client = genai.Client()
-        self.model = "gemini-2.0-flash-exp"
+        self.model_name = "gemini-2.0-flash-exp"
         
-        # LiveConnect configuration
-        self.config = types.LiveConnectConfig(
-            response_modalities=["TEXT", "AUDIO"],
-            system_instruction="You are a helpful AI assistant. Be conversational and engaging.",
-        )
+        # Initialize the model
+        self.model = genai.GenerativeModel(self.model_name)
         
         # Session state
         self.session = None
         self.running = False
-        self.event_loop = None
+        self.chat_session = None
 
-    async def start_session(self):
-        """Starts a new Gemini LiveConnect session with improved error handling."""
+    def start_session(self):
+        """Starts a new Gemini chat session (simplified for compatibility)."""
         print("✅ Starting Gemini session...")
         self.running = True
         
-        # Store the event loop
-        self.event_loop = asyncio.get_event_loop()
-        
         try:
-            # Improved connection handling
-            print("🔗 Connecting to Gemini Live API...")
-            async_live = self.client.aio.live.connect(model=self.model, config=self.config)
-            self.session = await async_live.__aenter__()
-            print("✅ Connected to Gemini Live successfully!")
+            # Start a chat session
+            self.chat_session = self.model.start_chat(history=[])
+            print("✅ Connected to Gemini successfully!")
+            return True
             
         except Exception as e:
             print(f"❌ Error starting session: {e}")
             self.running = False
-            self.event_loop = None
-            
-            # Better cleanup on failure
-            if hasattr(self, 'session') and self.session:
-                try:
-                    await self.session.__aexit__(None, None, None)
-                except Exception as cleanup_error:
-                    print(f"⚠️ Cleanup warning: {cleanup_error}")
-                self.session = None
-            
-            # Re-raise the original error for proper handling
+            self.chat_session = None
             raise Exception(f"Failed to start Gemini session: {str(e)}")
 
     def stop_session(self):
         """Stops the current session."""
         print("🛑 Stopping Gemini session...")
         self.running = False
-        
-        if self.session and self.event_loop:
-            try:
-                # Schedule cleanup in the event loop
-                asyncio.run_coroutine_threadsafe(
-                    self.session.__aexit__(None, None, None), 
-                    self.event_loop
-                )
-                print("✅ Session stopped cleanly")
-            except Exception as e:
-                print(f"⚠️ Error during session cleanup: {e}")
-        
-        self.session = None
-        self.event_loop = None
+        self.chat_session = None
+        print("✅ Session stopped cleanly")
 
-    def send_audio_frame(self, frame: av.AudioFrame):
-        """Converts and sends audio frame to Gemini."""
-        if not self.session or not self.running:
-            return
+    def send_text_message(self, message):
+        """Send a text message to Gemini and get response."""
+        if not self.chat_session or not self.running:
+            return "Session not active. Please start a session first."
         
         try:
-            # Convert audio frame to bytes
-            audio_array = frame.to_ndarray()
-            audio_bytes = audio_array.tobytes()
-            audio_b64 = base64.b64encode(audio_bytes).decode('utf-8')
+            response = self.chat_session.send_message(message)
+            return response.text
+        except Exception as e:
+            print(f"⚠️ Error sending message: {e}")
+            return f"Error: {str(e)}"
+
+    def send_image_with_text(self, image, text="What do you see in this image?"):
+        """Send an image with text to Gemini."""
+        if not self.running:
+            return "Session not active. Please start a session first."
+        
+        try:
+            # Convert PIL image if needed
+            if hasattr(image, 'save'):
+                # It's a PIL image
+                response = self.model.generate_content([text, image])
+            else:
+                # Convert other formats to PIL
+                pil_image = Image.fromarray(image)
+                response = self.model.generate_content([text, pil_image])
             
-            # Send asynchronously
-            if self.event_loop:
-                asyncio.run_coroutine_threadsafe(
-                    self._send_audio_async(audio_b64), 
-                    self.event_loop
-                )
+            return response.text
         except Exception as e:
-            print(f"⚠️ Error processing audio frame: {e}")
-    
-    async def _send_audio_async(self, audio_b64):
-        """Sends audio data to Gemini asynchronously."""
-        try:
-            if self.session:
-                await self.session.send({
-                    "realtime_input": {
-                        "media_chunks": [{
-                            "mime_type": "audio/pcm",
-                            "data": audio_b64
-                        }]
-                    }
-                })
-        except Exception as e:
-            print(f"⚠️ Error sending audio: {e}")
+            print(f"⚠️ Error processing image: {e}")
+            return f"Error processing image: {str(e)}"
 
-    def send_video_frame(self, frame: av.VideoFrame):
-        """Converts and sends video frame to Gemini."""
-        if not self.session or not self.running:
+    # Simplified frame processing for compatibility
+    def send_video_frame(self, frame):
+        """Process video frame (simplified)."""
+        if not self.running:
             return
         
         try:
             # Convert video frame to PIL Image
             pil_image = frame.to_image()
             
-            # Convert to base64
-            buffer = io.BytesIO()
-            pil_image.save(buffer, format='JPEG', quality=85)
-            image_b64 = base64.b64encode(buffer.getvalue()).decode('utf-8')
+            # Store the latest frame for processing
+            self.latest_frame = pil_image
             
-            # Send asynchronously
-            if self.event_loop:
-                asyncio.run_coroutine_threadsafe(
-                    self._send_video_async(image_b64), 
-                    self.event_loop
-                )
         except Exception as e:
             print(f"⚠️ Error processing video frame: {e}")
-    
-    async def _send_video_async(self, image_b64):
-        """Sends image data to Gemini asynchronously."""
-        try:
-            if self.session:
-                await self.session.send({
-                    "realtime_input": {
-                        "media_chunks": [{
-                            "mime_type": "image/jpeg",
-                            "data": image_b64
-                        }]
-                    }
-                })
-        except Exception as e:
-            print(f"⚠️ Error sending video: {e}")
 
-    async def receive_responses(self, ui_callback):
-        """Continuously receives responses from Gemini."""
-        try:
-            async for response in self.session.receive():
-                if not self.running:
-                    break
-                
-                # Handle different response types
-                if hasattr(response, 'text') and response.text:
-                    ui_callback('text', response.text)
-                elif hasattr(response, 'audio') and response.audio:
-                    ui_callback('audio', response.audio)
-                elif hasattr(response, 'tool_call') and response.tool_call:
-                    ui_callback('tool_call', response.tool_call)
-                    
-        except Exception as e:
-            print(f"⚠️ Error receiving responses: {e}")
-            ui_callback('error', str(e))
+    def send_audio_frame(self, frame):
+        """Process audio frame (placeholder for future implementation)."""
+        if not self.running:
+            return
+        
+        # Audio processing can be added here when supported
+        pass
+
+    def get_frame_analysis(self, prompt="Describe what you see in the current frame"):
+        """Analyze the current video frame."""
+        if hasattr(self, 'latest_frame') and self.latest_frame:
+            return self.send_image_with_text(self.latest_frame, prompt)
+        else:
+            return "No frame available for analysis."

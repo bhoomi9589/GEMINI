@@ -1,8 +1,9 @@
 streamlit
 streamlit-webrtc
-google-genai
+google-generativeai
 python-dotenv
 opencv-python-headless
 av
 aioice
 aiortc
+Pillow

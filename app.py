@@ -3,6 +3,7 @@ import logging
 import streamlit as st
 import threading
 import uuid
+import time
 from queue import Queue
 from dotenv import load_dotenv
 
@@ -29,6 +30,9 @@ if 'session_active' not in st.session_state:
 
 if 'webrtc_component_key' not in st.session_state:
     st.session_state.webrtc_component_key = f"gemini-live-{uuid.uuid4().hex[:8]}"
+
+if 'last_analysis_time' not in st.session_state:
+    st.session_state.last_analysis_time = 0
 
 # Initialize GeminiLive with proper error handling
 if 'gemini_live' not in st.session_state:
@@ -83,55 +87,26 @@ Add: GEMINI_API_KEY = "your_actual_api_key_here"
 
 # --- Callback Functions ---
 
-def ui_update_callback(event_type, data):
-    """Called by GeminiLive when new data arrives."""
-    if event_type == 'text':
-        # Add AI response to transcript
-        transcript_queue.put(('ai', data))
-    elif event_type == 'audio':
-        # Handle audio response (could play audio)
-        transcript_queue.put(('ai_audio', 'Audio response received'))
-    elif event_type == 'error':
-        transcript_queue.put(('error', f"Error: {data}"))
-
 def start_session_callback():
-    """Start the Gemini Live session."""
+    """Start the Gemini session."""
     try:
-        # Start session in background thread
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        
-        async def start_and_listen():
-            try:
-                await st.session_state.gemini_live.start_session()
-                st.session_state.session_active = True
-                
-                # Start listening for responses
-                await st.session_state.gemini_live.receive_responses(ui_update_callback)
-            except Exception as e:
-                st.session_state.session_active = False
-                # Add error to transcript queue for UI display
-                transcript_queue.put(('error', f"Session failed: {str(e)}"))
-        
-        # Run in background thread
-        thread = threading.Thread(target=lambda: loop.run_until_complete(start_and_listen()))
-        thread.daemon = True
-        thread.start()
-        
-        # Add success message to transcript
-        transcript_queue.put(('system', "🚀 Starting Gemini Live session..."))
+        success = st.session_state.gemini_live.start_session()
+        if success:
+            st.session_state.session_active = True
+            transcript_queue.put(('system', "🚀 Gemini session started successfully!"))
+        else:
+            st.session_state.session_active = False
+            transcript_queue.put(('error', "Failed to start session"))
         
     except Exception as e:
         st.error(f"Error starting session: {e}")
         st.session_state.session_active = False
 
 def stop_session_callback():
-    """Stop the Gemini Live session."""
+    """Stop the Gemini session."""
     try:
         st.session_state.gemini_live.stop_session()
         st.session_state.session_active = False
-        
-        # Add stop message to transcript
         transcript_queue.put(('system', "🛑 Session stopped successfully"))
         
     except Exception as e:
@@ -143,6 +118,26 @@ def video_frame_callback(frame):
     if st.session_state.session_active and hasattr(st.session_state, 'gemini_live'):
         try:
             st.session_state.gemini_live.send_video_frame(frame)
+            
+            # Auto-analyze frame every 5 seconds
+            current_time = time.time()
+            if current_time - st.session_state.last_analysis_time > 5:
+                def analyze_frame():
+                    try:
+                        analysis = st.session_state.gemini_live.get_frame_analysis(
+                            "Briefly describe what you see in this frame."
+                        )
+                        transcript_queue.put(('ai', f"👁️ I see: {analysis}"))
+                    except Exception as e:
+                        print(f"Analysis error: {e}")
+                
+                # Run analysis in background
+                thread = threading.Thread(target=analyze_frame)
+                thread.daemon = True
+                thread.start()
+                
+                st.session_state.last_analysis_time = current_time
+                
         except Exception as e:
             print(f"⚠️ Error processing video frame: {e}")
     return frame
@@ -157,14 +152,13 @@ def audio_frame_callback(frame):
     return frame
 
 # --- Process Queue Updates ---
-# Update transcript from queue (non-blocking)
 updates_processed = 0
-max_updates_per_cycle = 5  # Prevent UI lag
+max_updates_per_cycle = 5
 
 while not transcript_queue.empty() and updates_processed < max_updates_per_cycle:
     try:
         event_type, data = transcript_queue.get_nowait()
-        timestamp = f"{st.session_state.get('current_time', 'Now')}"
+        timestamp = time.strftime("%H:%M:%S")
         
         st.session_state.transcript.append({
             'type': event_type,
@@ -175,9 +169,9 @@ while not transcript_queue.empty() and updates_processed < max_updates_per_cycle
     except:
         break
 
-# Limit transcript size to prevent memory issues
-if len(st.session_state.transcript) > 100:
-    st.session_state.transcript = st.session_state.transcript[-100:]
+# Limit transcript size
+if len(st.session_state.transcript) > 50:
+    st.session_state.transcript = st.session_state.transcript[-50:]
 
 # --- Main UI ---
 try:
@@ -192,8 +186,3 @@ try:
 except Exception as e:
     st.error(f"❌ **UI Error:** {str(e)}")
     st.info("💡 Try refreshing the page. If the problem persists, check the console for details.")
-    
-    # Show debug info in expander
-    with st.expander("🔧 Debug Information"):
-        st.code(f"Error details: {str(e)}")
-        st.code(f"Session state keys: {list(st.session_state.keys())}")
