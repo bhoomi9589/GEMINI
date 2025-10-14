@@ -1,36 +1,46 @@
-import asyncio
-import base64
-import io
-import logging
 import os
 import streamlit as st
 from PIL import Image
 import av
+import base64
+import io
 
-# Updated imports for Google Generative AI
-import google.generativeai as genai
-from google.generativeai import types
+# Try different import approaches
+try:
+    import google.generativeai as genai
+    GENAI_AVAILABLE = True
+except ImportError:
+    try:
+        # Fallback import
+        from google import generativeai as genai
+        GENAI_AVAILABLE = True
+    except ImportError:
+        GENAI_AVAILABLE = False
+        st.error("❌ Google Generative AI library not available")
 
 class GeminiLive:
     """
-    Manages all backend logic for the Gemini LiveConnect session.
-    This class is completely independent of Streamlit or Flask.
+    Manages all backend logic for the Gemini session.
+    Simplified version for better compatibility.
     """
     def __init__(self):
-        # Initialize API key - try multiple sources for compatibility
+        if not GENAI_AVAILABLE:
+            raise ImportError("Google Generative AI library not available")
+            
+        # Initialize API key - try multiple sources
         api_key = None
         
-        # Try 1: Environment variable (local development with .env)
+        # Try 1: Environment variable (local development)
         api_key = os.getenv("GEMINI_API_KEY")
         
         # Try 2: Streamlit secrets (cloud deployment)
         if not api_key:
             try:
                 api_key = st.secrets["GEMINI_API_KEY"]
-            except (KeyError, AttributeError):
+            except (KeyError, AttributeError, FileNotFoundError):
                 pass
         
-        # Try 3: Check if it's still a placeholder
+        # Validate API key
         if not api_key or api_key == "your_actual_gemini_api_key_here":
             raise ValueError(
                 "🔑 GEMINI_API_KEY not found!\n\n"
@@ -39,101 +49,84 @@ class GeminiLive:
                 "🔗 Get API key: https://makersuite.google.com/app/apikey"
             )
         
-        # Configure Gemini client with correct method
-        genai.configure(api_key=api_key)
-        self.model_name = "gemini-2.0-flash-exp"
-        
-        # Initialize the model
-        self.model = genai.GenerativeModel(self.model_name)
+        # Configure Gemini
+        try:
+            genai.configure(api_key=api_key)
+            self.model = genai.GenerativeModel("gemini-1.5-flash")  # Use stable model
+            print("✅ Gemini API configured successfully")
+        except Exception as e:
+            raise Exception(f"Failed to configure Gemini API: {str(e)}")
         
         # Session state
-        self.session = None
         self.running = False
         self.chat_session = None
+        self.latest_frame = None
 
     def start_session(self):
-        """Starts a new Gemini chat session (simplified for compatibility)."""
-        print("✅ Starting Gemini session...")
-        self.running = True
-        
+        """Start a Gemini chat session."""
         try:
-            # Start a chat session
             self.chat_session = self.model.start_chat(history=[])
-            print("✅ Connected to Gemini successfully!")
+            self.running = True
+            print("✅ Gemini session started")
             return True
-            
         except Exception as e:
-            print(f"❌ Error starting session: {e}")
+            print(f"❌ Failed to start session: {e}")
             self.running = False
-            self.chat_session = None
-            raise Exception(f"Failed to start Gemini session: {str(e)}")
+            return False
 
     def stop_session(self):
-        """Stops the current session."""
-        print("🛑 Stopping Gemini session...")
+        """Stop the session."""
         self.running = False
         self.chat_session = None
-        print("✅ Session stopped cleanly")
+        print("🛑 Session stopped")
 
     def send_text_message(self, message):
-        """Send a text message to Gemini and get response."""
-        if not self.chat_session or not self.running:
-            return "Session not active. Please start a session first."
+        """Send text message to Gemini."""
+        if not self.running or not self.chat_session:
+            return "Session not active"
         
         try:
             response = self.chat_session.send_message(message)
             return response.text
         except Exception as e:
-            print(f"⚠️ Error sending message: {e}")
             return f"Error: {str(e)}"
 
-    def send_image_with_text(self, image, text="What do you see in this image?"):
-        """Send an image with text to Gemini."""
+    def send_image_with_text(self, image, text="What do you see?"):
+        """Send image with text to Gemini."""
         if not self.running:
-            return "Session not active. Please start a session first."
+            return "Session not active"
         
         try:
-            # Convert PIL image if needed
+            # Ensure we have a PIL Image
             if hasattr(image, 'save'):
-                # It's a PIL image
-                response = self.model.generate_content([text, image])
+                pil_image = image
             else:
-                # Convert other formats to PIL
                 pil_image = Image.fromarray(image)
-                response = self.model.generate_content([text, pil_image])
             
+            # Generate content with image
+            response = self.model.generate_content([text, pil_image])
             return response.text
         except Exception as e:
-            print(f"⚠️ Error processing image: {e}")
-            return f"Error processing image: {str(e)}"
+            return f"Error analyzing image: {str(e)}"
 
-    # Simplified frame processing for compatibility
     def send_video_frame(self, frame):
-        """Process video frame (simplified)."""
+        """Process video frame."""
         if not self.running:
             return
         
         try:
-            # Convert video frame to PIL Image
-            pil_image = frame.to_image()
-            
-            # Store the latest frame for processing
-            self.latest_frame = pil_image
-            
+            # Convert frame to PIL Image
+            self.latest_frame = frame.to_image()
         except Exception as e:
-            print(f"⚠️ Error processing video frame: {e}")
+            print(f"Error processing video frame: {e}")
 
     def send_audio_frame(self, frame):
-        """Process audio frame (placeholder for future implementation)."""
-        if not self.running:
-            return
-        
-        # Audio processing can be added here when supported
+        """Process audio frame (placeholder)."""
+        # Audio processing can be added later
         pass
 
-    def get_frame_analysis(self, prompt="Describe what you see in the current frame"):
-        """Analyze the current video frame."""
-        if hasattr(self, 'latest_frame') and self.latest_frame:
+    def get_frame_analysis(self, prompt="Describe what you see"):
+        """Analyze the current frame."""
+        if self.latest_frame:
             return self.send_image_with_text(self.latest_frame, prompt)
-        else:
-            return "No frame available for analysis."
+        return "No frame available"
