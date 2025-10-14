@@ -21,69 +21,72 @@ load_dotenv()
 # Thread-safe queue for async communication
 transcript_queue = Queue()
 
-# --- Session State Initialization ---
-if 'transcript' not in st.session_state:
-    st.session_state.transcript = []
+def initialize_session_state():
+    """Initialize all session state variables"""
+    if 'transcript' not in st.session_state:
+        st.session_state.transcript = []
 
-if 'session_active' not in st.session_state:
-    st.session_state.session_active = False
+    if 'session_active' not in st.session_state:
+        st.session_state.session_active = False
 
-if 'webrtc_component_key' not in st.session_state:
-    st.session_state.webrtc_component_key = f"gemini-live-{uuid.uuid4().hex[:8]}"
+    if 'webrtc_component_key' not in st.session_state:
+        st.session_state.webrtc_component_key = f"gemini-live-{uuid.uuid4().hex[:8]}"
 
-if 'last_analysis_time' not in st.session_state:
-    st.session_state.last_analysis_time = 0
+    if 'last_analysis_time' not in st.session_state:
+        st.session_state.last_analysis_time = 0
 
-# Initialize GeminiLive with proper error handling
-if 'gemini_live' not in st.session_state:
-    try:
-        st.session_state.gemini_live = GeminiLive()
-        # Only show success message once
-        if 'api_initialized' not in st.session_state:
-            st.success("✅ Gemini API connected successfully!")
-            st.session_state.api_initialized = True
-    except ValueError as e:
-        # Handle API key configuration errors
-        st.error("❌ **API Key Configuration Error**")
-        
-        # Parse the error message to show specific instructions
-        error_msg = str(e)
-        if "GEMINI_API_KEY not found" in error_msg:
-            st.markdown("### 🔑 **Setup Instructions:**")
+    if 'gemini_live' not in st.session_state:
+        try:
+            st.session_state.gemini_live = GeminiLive()
+            # Only show success message once
+            if 'api_initialized' not in st.session_state:
+                st.success("✅ Gemini API connected successfully!")
+                st.session_state.api_initialized = True
+        except ValueError as e:
+            # Handle API key configuration errors
+            st.error("❌ **API Key Configuration Error**")
             
-            # Check if running locally or on cloud
-            try:
-                # Try to detect if we're on Streamlit Cloud
-                if hasattr(st, 'secrets') and st.secrets:
-                    # Running on Streamlit Cloud
-                    st.info("☁️ **You're on Streamlit Cloud** - Add your API key to app secrets:")
-                    st.code("""
-Go to: Manage app → Settings → Secrets
-Add: GEMINI_API_KEY = "your_actual_api_key_here"
-                    """)
-                else:
-                    # Running locally
-                    st.info("📍 **Local Development** - Set your API key in .env file:")
-                    st.code("GEMINI_API_KEY=your_actual_api_key_here")
-            except:
-                # Show both options if we can't detect
-                st.info("📍 **Local Development:** Set GEMINI_API_KEY in your .env file")
-                st.info("☁️ **Streamlit Cloud:** Add GEMINI_API_KEY to app secrets")
+            # Parse the error message to show specific instructions
+            error_msg = str(e)
+            if "GEMINI_API_KEY not found" in error_msg:
+                st.markdown("### 🔑 **Setup Instructions:**")
+                
+                # Check if running locally or on cloud
+                try:
+                    # Try to detect if we're on Streamlit Cloud
+                    if hasattr(st, 'secrets') and st.secrets:
+                        # Running on Streamlit Cloud
+                        st.info("☁️ **You're on Streamlit Cloud** - Add your API key to app secrets:")
+                        st.code("""
+    Go to: Manage app → Settings → Secrets
+    Add: GEMINI_API_KEY = "your_actual_api_key_here"
+                        """)
+                    else:
+                        # Running locally
+                        st.info("📍 **Local Development** - Set your API key in .env file:")
+                        st.code("GEMINI_API_KEY=your_actual_api_key_here")
+                except:
+                    # Show both options if we can't detect
+                    st.info("📍 **Local Development:** Set GEMINI_API_KEY in your .env file")
+                    st.info("☁️ **Streamlit Cloud:** Add GEMINI_API_KEY to app secrets")
+                
+                st.info("🔗 **Get your API key:** https://makersuite.google.com/app/apikey")
+                st.warning("⚠️ **Important:** Never commit your API key to Git!")
+            else:
+                st.error(f"Configuration error: {error_msg}")
             
-            st.info("🔗 **Get your API key:** https://makersuite.google.com/app/apikey")
-            st.warning("⚠️ **Important:** Never commit your API key to Git!")
-        else:
-            st.error(f"Configuration error: {error_msg}")
-        
-        st.stop()
-    except Exception as e:
-        # Handle other initialization errors
-        st.error(f"❌ **Unexpected Error:** {str(e)}")
-        st.info("💡 **Troubleshooting:**")
-        st.info("1. Check your internet connection")
-        st.info("2. Verify your API key is valid")
-        st.info("3. Try refreshing the page")
-        st.stop()
+            st.stop()
+        except Exception as e:
+            # Handle other initialization errors
+            st.error(f"❌ **Unexpected Error:** {str(e)}")
+            st.info("💡 **Troubleshooting:**")
+            st.info("1. Check your internet connection")
+            st.info("2. Verify your API key is valid")
+            st.info("3. Try refreshing the page")
+            st.stop()
+
+# Initialize session state first
+initialize_session_state()
 
 # --- Callback Functions ---
 
@@ -115,40 +118,58 @@ def stop_session_callback():
 
 def video_frame_callback(frame):
     """Process video frames from WebRTC."""
-    if st.session_state.session_active and hasattr(st.session_state, 'gemini_live'):
-        try:
-            st.session_state.gemini_live.send_video_frame(frame)
-            
-            # Auto-analyze frame every 5 seconds
-            current_time = time.time()
-            if current_time - st.session_state.last_analysis_time > 5:
-                def analyze_frame():
-                    try:
-                        analysis = st.session_state.gemini_live.get_frame_analysis(
-                            "Briefly describe what you see in this frame."
-                        )
-                        transcript_queue.put(('ai', f"👁️ I see: {analysis}"))
-                    except Exception as e:
-                        print(f"Analysis error: {e}")
+    # Safe session state access
+    try:
+        session_active = getattr(st.session_state, 'session_active', False)
+        gemini_live = getattr(st.session_state, 'gemini_live', None)
+        
+        if session_active and gemini_live:
+            try:
+                gemini_live.send_video_frame(frame)
                 
-                # Run analysis in background
-                thread = threading.Thread(target=analyze_frame)
-                thread.daemon = True
-                thread.start()
+                # Auto-analyze frame every 5 seconds
+                current_time = time.time()
+                last_analysis_time = getattr(st.session_state, 'last_analysis_time', 0)
                 
-                st.session_state.last_analysis_time = current_time
-                
-        except Exception as e:
-            print(f"⚠️ Error processing video frame: {e}")
+                if current_time - last_analysis_time > 5:
+                    def analyze_frame():
+                        try:
+                            analysis = gemini_live.get_frame_analysis(
+                                "Briefly describe what you see in this frame."
+                            )
+                            transcript_queue.put(('ai', f"👁️ I see: {analysis}"))
+                        except Exception as e:
+                            print(f"Analysis error: {e}")
+                    
+                    # Run analysis in background
+                    thread = threading.Thread(target=analyze_frame)
+                    thread.daemon = True
+                    thread.start()
+                    
+                    st.session_state.last_analysis_time = current_time
+                    
+            except Exception as e:
+                print(f"⚠️ Error processing video frame: {e}")
+    except Exception as e:
+        print(f"⚠️ Error in video callback: {e}")
+    
     return frame
 
 def audio_frame_callback(frame):
     """Process audio frames from WebRTC."""
-    if st.session_state.session_active and hasattr(st.session_state, 'gemini_live'):
-        try:
-            st.session_state.gemini_live.send_audio_frame(frame)
-        except Exception as e:
-            print(f"⚠️ Error processing audio frame: {e}")
+    # Safe session state access
+    try:
+        session_active = getattr(st.session_state, 'session_active', False)
+        gemini_live = getattr(st.session_state, 'gemini_live', None)
+        
+        if session_active and gemini_live:
+            try:
+                gemini_live.send_audio_frame(frame)
+            except Exception as e:
+                print(f"⚠️ Error processing audio frame: {e}")
+    except Exception as e:
+        print(f"⚠️ Error in audio callback: {e}")
+    
     return frame
 
 # --- Process Queue Updates ---
