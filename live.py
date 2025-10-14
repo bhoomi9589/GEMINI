@@ -1,132 +1,221 @@
-import os
 import streamlit as st
-from PIL import Image
-import av
-import base64
+import asyncio
+import threading
+import queue
+import logging
+import time
+from typing import Optional, Any
 import io
 
-# Try different import approaches
-try:
-    import google.generativeai as genai
-    GENAI_AVAILABLE = True
-except ImportError:
-    try:
-        # Fallback import
-        from google import generativeai as genai
-        GENAI_AVAILABLE = True
-    except ImportError:
-        GENAI_AVAILABLE = False
-        st.error("❌ Google Generative AI library not available")
+# Suppress Streamlit warnings
+logging.getLogger('streamlit').setLevel(logging.ERROR)
 
-class GeminiLive:
-    """
-    Manages all backend logic for the Gemini session.
-    Simplified version for better compatibility.
-    """
+# Configure Streamlit page
+st.set_page_config(
+    page_title="Media Processor",
+    page_icon="🎬",
+    layout="wide"
+)
+
+class MediaProcessor:
     def __init__(self):
-        if not GENAI_AVAILABLE:
-            raise ImportError("Google Generative AI library not available")
-            
-        # Initialize API key - try multiple sources
-        api_key = None
-        
-        # Try 1: Environment variable (local development)
-        api_key = os.getenv("GEMINI_API_KEY")
-        
-        # Try 2: Streamlit secrets (cloud deployment)
-        if not api_key:
-            try:
-                api_key = st.secrets["GEMINI_API_KEY"]
-            except (KeyError, AttributeError, FileNotFoundError):
-                pass
-        
-        # Validate API key
-        if not api_key or api_key == "your_actual_gemini_api_key_here":
-            raise ValueError(
-                "🔑 GEMINI_API_KEY not found!\n\n"
-                "📍 Local Development: Set GEMINI_API_KEY in your .env file\n"
-                "☁️ Streamlit Cloud: Add GEMINI_API_KEY to app secrets\n"
-                "🔗 Get API key: https://makersuite.google.com/app/apikey"
+        self.processing_queue = queue.Queue()
+        self.result_queue = queue.Queue()
+        self.is_running = False
+    
+    def start_background_processor(self):
+        """Start background processor thread"""
+        if not self.is_running:
+            self.is_running = True
+            processor_thread = threading.Thread(
+                target=self._background_worker, 
+                daemon=True
             )
-        
-        # Configure Gemini
+            processor_thread.start()
+    
+    def _background_worker(self):
+        """Background worker that processes media without Streamlit calls"""
+        while self.is_running:
+            try:
+                if not self.processing_queue.empty():
+                    task = self.processing_queue.get(timeout=1)
+                    result = self._process_media_item(task)
+                    self.result_queue.put(result)
+                else:
+                    time.sleep(0.1)
+            except queue.Empty:
+                continue
+            except Exception as e:
+                self.result_queue.put({"error": str(e)})
+    
+    def _process_media_item(self, task_data):
+        """Process media item without any Streamlit calls"""
         try:
-            genai.configure(api_key=api_key)
-            self.model = genai.GenerativeModel("gemini-1.5-flash")  # Use stable model
-            print("✅ Gemini API configured successfully")
-        except Exception as e:
-            raise Exception(f"Failed to configure Gemini API: {str(e)}")
-        
-        # Session state
-        self.running = False
-        self.chat_session = None
-        self.latest_frame = None
-
-    def start_session(self):
-        """Start a Gemini chat session."""
-        try:
-            self.chat_session = self.model.start_chat(history=[])
-            self.running = True
-            print("✅ Gemini session started")
-            return True
-        except Exception as e:
-            print(f"❌ Failed to start session: {e}")
-            self.running = False
-            return False
-
-    def stop_session(self):
-        """Stop the session."""
-        self.running = False
-        self.chat_session = None
-        print("🛑 Session stopped")
-
-    def send_text_message(self, message):
-        """Send text message to Gemini."""
-        if not self.running or not self.chat_session:
-            return "Session not active"
-        
-        try:
-            response = self.chat_session.send_message(message)
-            return response.text
-        except Exception as e:
-            return f"Error: {str(e)}"
-
-    def send_image_with_text(self, image, text="What do you see?"):
-        """Send image with text to Gemini."""
-        if not self.running:
-            return "Session not active"
-        
-        try:
-            # Ensure we have a PIL Image
-            if hasattr(image, 'save'):
-                pil_image = image
-            else:
-                pil_image = Image.fromarray(image)
+            file_data = task_data.get('file_data')
+            process_type = task_data.get('type', 'unknown')
             
-            # Generate content with image
-            response = self.model.generate_content([text, pil_image])
-            return response.text
+            # Simulate processing time
+            time.sleep(2)
+            
+            # Your actual media processing logic here
+            result = {
+                "status": "success",
+                "type": process_type,
+                "size": len(file_data) if file_data else 0,
+                "processed_at": time.time(),
+                "message": f"Successfully processed {process_type} file"
+            }
+            
+            return result
+            
         except Exception as e:
-            return f"Error analyzing image: {str(e)}"
+            return {
+                "status": "error",
+                "error": str(e),
+                "processed_at": time.time()
+            }
+    
+    def add_task(self, file_data, file_type):
+        """Add processing task to queue"""
+        task = {
+            "file_data": file_data,
+            "type": file_type,
+            "timestamp": time.time()
+        }
+        self.processing_queue.put(task)
+    
+    def get_results(self):
+        """Get all available results"""
+        results = []
+        while not self.result_queue.empty():
+            try:
+                result = self.result_queue.get_nowait()
+                results.append(result)
+            except queue.Empty:
+                break
+        return results
 
-    def send_video_frame(self, frame):
-        """Process video frame."""
-        if not self.running:
-            return
+# Initialize session state
+def initialize_session_state():
+    if 'media_processor' not in st.session_state:
+        st.session_state.media_processor = MediaProcessor()
+    
+    if 'processing_results' not in st.session_state:
+        st.session_state.processing_results = []
+    
+    if 'processor_started' not in st.session_state:
+        st.session_state.media_processor.start_background_processor()
+        st.session_state.processor_started = True
+
+# Async processing function (runs in main thread)
+async def async_process_multiple_files(files):
+    """Async processing that doesn't interfere with Streamlit context"""
+    results = []
+    
+    for file in files:
+        # Process each file asynchronously
+        await asyncio.sleep(0.1)  # Simulate async work
         
-        try:
-            # Convert frame to PIL Image
-            self.latest_frame = frame.to_image()
-        except Exception as e:
-            print(f"Error processing video frame: {e}")
+        # Add to background processor queue
+        st.session_state.media_processor.add_task(
+            file_data=file.read() if file else None,
+            file_type=file.type if hasattr(file, 'type') else 'unknown'
+        )
+        
+        results.append({
+            "filename": file.name if hasattr(file, 'name') else 'unknown',
+            "status": "queued"
+        })
+    
+    return results
 
-    def send_audio_frame(self, frame):
-        """Process audio frame (placeholder)."""
-        # Audio processing can be added later
-        pass
+def main():
+    # Initialize everything
+    initialize_session_state()
+    
+    st.title("🎬 Media Processor")
+    st.markdown("Upload and process media files without context warnings")
+    
+    # Sidebar for controls
+    with st.sidebar:
+        st.header("Controls")
+        
+        # Queue status
+        queue_size = st.session_state.media_processor.processing_queue.qsize()
+        st.metric("Queue Size", queue_size)
+        
+        # Clear results
+        if st.button("Clear Results"):
+            st.session_state.processing_results = []
+            st.rerun()
+    
+    # Main content area
+    col1, col2 = st.columns([1, 1])
+    
+    with col1:
+        st.header("Upload Files")
+        
+        # File uploader
+        uploaded_files = st.file_uploader(
+            "Choose media files",
+            accept_multiple_files=True,
+            type=['mp4', 'avi', 'mov', 'mp3', 'wav', 'jpg', 'png']
+        )
+        
+        # Process button
+        if st.button("Process Files", disabled=not uploaded_files):
+            if uploaded_files:
+                with st.spinner("Adding files to processing queue..."):
+                    # Use asyncio in main thread - this is safe
+                    loop = asyncio.new_event_loop()
+                    asyncio.set_event_loop(loop)
+                    
+                    try:
+                        queued_results = loop.run_until_complete(
+                            async_process_multiple_files(uploaded_files)
+                        )
+                        st.success(f"Added {len(queued_results)} files to processing queue!")
+                        
+                        # Display queued files
+                        for result in queued_results:
+                            st.info(f"Queued: {result['filename']}")
+                            
+                    finally:
+                        loop.close()
+    
+    with col2:
+        st.header("Processing Results")
+        
+        # Check for new results
+        new_results = st.session_state.media_processor.get_results()
+        if new_results:
+            st.session_state.processing_results.extend(new_results)
+            st.rerun()
+        
+        # Display results
+        if st.session_state.processing_results:
+            for i, result in enumerate(reversed(st.session_state.processing_results[-10:])):
+                with st.expander(f"Result {len(st.session_state.processing_results) - i}"):
+                    if result.get('status') == 'success':
+                        st.success(result.get('message', 'Processing completed'))
+                        st.json({
+                            'type': result.get('type'),
+                            'size': result.get('size'),
+                            'processed_at': time.ctime(result.get('processed_at', 0))
+                        })
+                    else:
+                        st.error(f"Error: {result.get('error', 'Unknown error')}")
+        else:
+            st.info("No results yet. Upload and process files to see results here.")
+        
+        # Auto-refresh button
+        if st.button("🔄 Refresh Results"):
+            st.rerun()
+    
+    # Auto-refresh every 2 seconds if there are items in queue
+    if queue_size > 0:
+        time.sleep(2)
+        st.rerun()
 
-    def get_frame_analysis(self, prompt="Describe what you see"):
-        """Analyze the current frame."""
-        if self.latest_frame:
-            return self.send_image_with_text(self.latest_frame, prompt)
-        return "No frame available"
+if __name__ == "__main__":
+    main()
